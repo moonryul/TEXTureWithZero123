@@ -29,7 +29,7 @@ class TEXTure:
         self.paint_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        utils.seed_everything(self.cfg.optim.seed)
+        utils.seed_everything(self.cfg.optim.seed)  #MJ: self.cfg.optim.seed = 0
 
         # Make view_dirs
         self.exp_path = make_path(self.cfg.log.exp_dir)
