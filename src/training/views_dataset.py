@@ -147,7 +147,7 @@ class MultiviewDataset:
         }
 
         return data
-
+    #MJ:  DataLoader:  def __init__(self, dataset: Dataset sampler: Union[Sampler, Iterable, None] = None,
     def dataloader(self):
         loader = DataLoader(list(range(self.size)), batch_size=1, collate_fn=self.collate, shuffle=False,
                             num_workers=0)
@@ -191,7 +191,7 @@ class ViewsDataset:
         return data
 
     def dataloader(self):
-        loader = DataLoader(list(range(self.size)), batch_size=1, collate_fn=self.collate, shuffle=False,
+        loader = DataLoader(list(range(self.size)), batch_size=1, collate_fn=self.collate, shuffle=False, #MJ: shuffle force by default
                             num_workers=0)
         loader._data = self  # an ugly fix... we need to access dataset in trainer.
         return loader

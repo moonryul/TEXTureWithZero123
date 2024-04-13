@@ -64,7 +64,7 @@ class StableDiffusion(nn.Module):
         self.image_encoder = None
         self.image_processor = None
 
-        # 3. The UNet model for generating the latents.
+        # 3. The UNet models for generating the latents.
         self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(
             self.device)
 
@@ -80,7 +80,7 @@ class StableDiffusion(nn.Module):
         elif self.second_model_type is not None:
             raise NotImplementedError
 
-        # 4. Create a scheduler for inference
+        # 4. Create a scheduler for inference: MJ: The same scheduler is used for self.unet and self.inapint_unet, and the zero123 unet net
         self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                        num_train_timesteps=self.num_train_timesteps, steps_offset=1,
                                        skip_prk_steps=True)
@@ -98,7 +98,9 @@ class StableDiffusion(nn.Module):
             config = OmegaConf.load("./src/zero123/zero123/configs/sd-objaverse-finetune-c_concat-256.yaml")
 
         # pl_sd = torch.load("./src/zero123/control_zero123.ckpt", map_location='cpu')
-        pl_sd = torch.load("./src/zero123/epoch=19-step=6359.ckpt", map_location='cpu')
+        #MJ: pl_sd = torch.load("./src/zero123/epoch=19-step=6359.ckpt", map_location='cpu')
+        
+        pl_sd = torch.load("./epoch=19-step=6359.ckpt", map_location='cpu') #MJ: added by MJ for branch swap-loops
         sd = pl_sd['state_dict']
 
         model = instantiate_from_config(config.model).to(self.device)
@@ -107,12 +109,20 @@ class StableDiffusion(nn.Module):
 
         return model
 
+#MJ:  cond, uc = self.get_zero123_inputs(
+                        #     F.interpolate(front_image, size=(512, 512)), #MJ: front_image: (1,3,919,919)
+                        #     F.interpolate(original_depth_mask, size=(512, 512))[0],  #MJ: original_depth_mask: (1,1,919,919)
+                        #     phi, theta,
+                        #     scale=guidance_scale,
+                        #     use_control=use_control
+                        # )
+                        
     @torch.no_grad()
     def get_zero123_inputs(
         self,
         cond_image,
         depth_map,
-        x, y, z=1.0,
+        x, y, z=1.0,  #MJ:x= phi, y=theta
         n_samples=1,
         scale=1.0,
         use_control=True
@@ -122,7 +132,7 @@ class StableDiffusion(nn.Module):
 
         # JA: The following code is from gradio_new_depth_texture.py
 
-        c = self.second_model.get_learned_conditioning(cond_image).tile(n_samples, 1, 1)
+        c = self.second_model.get_learned_conditioning(cond_image).tile(n_samples, 1, 1) #MJ: c: shape =(1,1,768)
 
         # T = torch.tensor([math.radians(x), math.sin(
         #     math.radians(y)), math.cos(math.radians(y)), z]) # JA: In the TEXTure code, x and y are in radians already
@@ -132,14 +142,14 @@ class StableDiffusion(nn.Module):
         if x > math.pi:
             x -= 2 * math.pi
 
-        T = torch.tensor([x, math.sin(y), math.cos(y), z])
+        T = torch.tensor([x, math.sin(y), math.cos(y), z]) #MJ: T: shape = [4]
 
-        T = T[None, None, :].repeat(n_samples, 1, 1).to(c.device)
-        c = torch.cat([c, T], dim=-1)
+        T = T[None, None, :].repeat(n_samples, 1, 1).to(c.device) #MJ: T: shape = [1,1,4]
+        c = torch.cat([c, T], dim=-1)                              #MJ: c: shape =[1,1,768]  
         c = self.second_model.cc_projection(c)
         cond = {}
         cond['c_crossattn'] = [c]
-        cond['c_concat'] = [self.second_model.encode_first_stage((cond_image.to(c.device))).mode().detach().repeat(n_samples, 1, 1, 1)]
+        cond['c_concat'] = [self.second_model.encode_first_stage((cond_image.to(c.device))).mode().detach().repeat(n_samples, 1, 1, 1)] #MJ: concat: 64x64
         
         if use_control:
             depth_min = torch.amin(depth_map, dim=[0, 1, 2], keepdim=True)
@@ -364,22 +374,22 @@ class StableDiffusion(nn.Module):
                         # truth with some noise. latents now refers to the image being denoised and plays the role of
                         # x in apply_model.
 
-                        torchvision.utils.save_image(self.decode_latents(latents), f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png")
-                        torchvision.utils.save_image(self.decode_latents(noised_truth), f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png")
-                        torchvision.utils.save_image(F.interpolate(curr_mask, size=(512, 512))[0], f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png")
+                        torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png")
+                        torchvision.utils.save_image(self.decode_latents(noised_truth), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png")
+                        torchvision.utils.save_image(F.interpolate(curr_mask, size=(512, 512))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png")
                         # torchvision.utils.save_image(F.interpolate(original_depth_mask, size=(512, 512))[0], f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_depth_mask.png")
-                        torchvision.utils.save_image(pred_rgb_512, f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png")
+                        torchvision.utils.save_image(pred_rgb_512, f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png")
 
                         # JA: This blend operation is executed for the traditional depth pipeline and the zero123 pipeline
                         latents = latents * curr_mask + noised_truth * (1 - curr_mask)
-                        torchvision.utils.save_image(self.decode_latents(latents), f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
+                        torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
 
                         debug_image_paths = [
-                            f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
-                            f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
-                            f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
-                            f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
-                            f"/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
+                            f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
+                            f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
+                            f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
+                            f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
+                            f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
                         ]
                         images = [Image.open(x) for x in debug_image_paths]
                         widths, heights = zip(*(i.size for i in images))
@@ -394,7 +404,7 @@ class StableDiffusion(nn.Module):
                             new_im.paste(im, (x_offset,0))
                             x_offset += im.size[0]
 
-                        new_im.save(f'/home/jaehoon/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}.png')
+                        new_im.save(f'./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}.png')
 
                         for image_path in debug_image_paths:
                             os.remove(image_path)
@@ -421,15 +431,15 @@ class StableDiffusion(nn.Module):
 
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    else:
+                    else: #MJ: view_dir = "left" (2nd view)
                         # JA: zero123 or control zero123
 
                         # JA: The following block was added to handle the control image for zero123
                         use_control = self.second_model_type == "control_zero123"
 
                         cond, uc = self.get_zero123_inputs(
-                            F.interpolate(front_image, size=(512, 512)),
-                            F.interpolate(original_depth_mask, size=(512, 512))[0],
+                            F.interpolate(front_image, size=(512, 512)), #MJ: front_image: (1,3,919,919)
+                            F.interpolate(original_depth_mask, size=(512, 512))[0],  #MJ: original_depth_mask: (1,1,919,919)
                             phi, theta,
                             scale=guidance_scale,
                             use_control=use_control
@@ -523,7 +533,7 @@ class StableDiffusion(nn.Module):
             # if self.second_model_type in ["zero123", "control_zero123"] and view_dir != "front":
             #     latents = None#torch.randn((64, 64), device=self.device)
             # else:
-            latents = self.encode_imgs(pred_rgb_512) # JA: Convert the rgb_render_output to the latent space of shape 64x64
+            latents = self.encode_imgs(pred_rgb_512) # JA: Convert the rgb_render_output of shape (512,512) to the latent space of shape 64x64
 
             if self.use_inpaint:
                 update_mask_512 = F.interpolate(update_mask, (512, 512))
@@ -532,10 +542,10 @@ class StableDiffusion(nn.Module):
 
         if update_mask is not None:
             update_mask = F.interpolate(update_mask, (64, 64), mode='nearest')
-        if check_mask is not None:
+        if check_mask is not None: #MJ: is None, in the case of the Front View
             check_mask = F.interpolate(check_mask, (64, 64), mode='nearest')
 
-        # JA: Normalize depth map so that its values range from -1 to +1
+        # JA: Normalize depth map so that its values range from -1 to +1: MJ: depth_mask.min()=-0.1832; depth_mask.max()=1.0357; check why some depth are positive
         depth_mask = 2.0 * (depth_mask - depth_mask.min()) / (depth_mask.max() - depth_mask.min()) - 1.0
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level

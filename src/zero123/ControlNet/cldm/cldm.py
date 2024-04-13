@@ -391,7 +391,7 @@ class ControlLDM(LatentDiffusion):
             # JA: If c_control does not exist, then it is assumed that c_concat is the hint. If both c_control and
             # c_concat both exist, then c_concat is to be concatenated in the normal manner, with x_noisy which
             # is seen in the DiffusionWrapper.
-            x = torch.cat([x_noisy] + cond['c_concat'], dim=1) # JA: In this case, the channels of x is 8
+            x = torch.cat([x_noisy] + cond['c_concat'], dim=1) # JA: In this case, the channels of x is 8; MJ: x_noisy, cond['c_concat']:(1,4,64,64); 
         elif self.model.conditioning_key == 'crossattn':
             # JA: Set x to be the original value, which is x_noisy. This is the default behavior in ControlNet
             x = x_noisy # JA: In this case, the channel is 4
@@ -399,12 +399,12 @@ class ControlLDM(LatentDiffusion):
             raise NotImplementedError
 
         c_control = cond['c_control'] if 'c_control' in cond else None
-        if c_control is not None:
-            control = self.control_model(x=x, hint=torch.cat(cond['c_control'], 1), timesteps=t, context=cond_txt) # JA: the control is the skip connections from the encoding blocks of copied stable diffusion
+        if c_control is not None: #MJ: cond['c_control'][0]: (1,3,512,512)
+            control = self.control_model(x=x, hint=torch.cat(cond['c_control'], 1), timesteps=t, context=cond_txt) # JA: the control is the list of skip connections (len=13) from the encoding blocks of copied stable diffusion
             control = [c * scale for c, scale in zip(control, self.control_scales)]
         else:
             control = None
-
+        #MJ: x: (1,8,64,64) 
         eps = diffusion_model(x=x, timesteps=t, context=cond_txt, control=control, only_mid_control=self.only_mid_control)
 
         return eps

@@ -43,7 +43,7 @@ class TEXTure:
 
         self.view_dirs = ['front', 'left', 'back', 'right', 'overhead', 'bottom'] # self.view_dirs[dir] when dir = [4] = [right]
         self.mesh_model = self.init_mesh_model()
-        self.diffusion = self.init_diffusion()
+        self.diffusion = self.init_diffusion() #MJ: initialize the vae, the unets for depth pipeline, inpainting pipeline, and the zero123 unet, the single scheduler for all the unets
         self.text_z, self.text_string = self.calc_text_embeddings()
         self.dataloaders = self.init_dataloaders()
         self.back_im = torch.Tensor(np.array(Image.open(self.cfg.guide.background_img).convert('RGB'))).to(
@@ -106,7 +106,7 @@ class TEXTure:
 
     def init_dataloaders(self) -> Dict[str, DataLoader]:
         init_train_dataloader = MultiviewDataset(self.cfg.render, device=self.device).dataloader()
-
+        #MJ: Instead, an object is considered an iterator if it implements two methods: __iter__() and __next__(). The __iter__() method returns the iterator object itself and is called when an iterator is required, such as at the start of loops. The __next__() method returns the next item from the sequence and is called at each loop iteration. When there are no more items to return, __next__() should raise a StopIteration exception to signal that the iteration is complete.
         val_loader = ViewsDataset(self.cfg.render, device=self.device,
                                   size=self.cfg.log.eval_size).dataloader()
         # Will be used for creating the final video
@@ -137,13 +137,20 @@ class TEXTure:
         self.diffusion.scheduler.set_timesteps(num_inference_steps)
         timesteps, num_inference_steps = self.diffusion.get_timesteps(num_inference_steps, strength)
 
-        for i, t in tqdm(enumerate(timesteps)):
+        for i, t in tqdm(enumerate(timesteps)): #MJ: timesteps=[981,961,..., 21,1]
             # JA: The following loop computes the texture atlas for the given mesh using ten render images. In other words,
             # it is the inverse rendering process. Each of the ten views is one of the six view images.
-            for data in self.dataloaders['train']:
+            #MJ:
+            pbar.reset()  # Reuse the same progress bar, which ranges over the data items in dataloaders
+            #self.paint_step += 1
+            for data in self.dataloaders['train']: #MJ: data = {'dir': tensor([0]), 'theta': 1.0471975803375244, 'phi': 0.0, 'radius': 1.5, 'base_theta': 1.0471975511965976}
                 self.paint_step += 1
-                pbar.update(1)
-                self.paint_viewpoint(data, i, t, timesteps) # JA: paint_viewpoint computes the part of the texture atlas by using a specific view image
+                pbar.update(1) #MJ: Out of timesteps units, increment by 1 unit
+                self.paint_viewpoint(data, i, t, timesteps) 
+                # MJ: The same i and t used for the first viewpoint scheduler is used for the second viewpoint scheduler, without incrementing i and t; This breaks the scheduler logic; 
+                # To solve this problem, we need to denoise all the view images simultaneously. This can be done by creating a random tensor whose batch dim is
+                # # the number of viewpoints.
+               
                 self.evaluate(self.dataloaders['val'], self.eval_renders_path)  # JA: This is the validation step for the current
                                                                                 # training step
                 self.mesh_model.train() # JA: Set the model to train mode because the self.evaluate sets the model to eval mode.
@@ -214,7 +221,7 @@ class TEXTure:
         phi = float(phi + 2 * np.pi if phi < 0 else phi)
         logger.info(f'Painting from theta: {theta}, phi: {phi}, radius: {radius}')
 
-        # Set background image
+        # Set background image: MJ: background is not None in our experiment
         if  True: #self.cfg.guide.second_model_type in ["zero123", "control_zero123"]: #self.view_dirs[data['dir']] != "front":
             # JA: For Zero123, the input image background is always white
             background = torch.Tensor([1, 1, 1]).to(self.device)
@@ -226,30 +233,30 @@ class TEXTure:
                                        mode='bilinear', align_corners=False)
 
         # Render from viewpoint
-        outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background)
+        outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background) #MJ: with render_cache = None; This is the only case where render_cache = None is used
         render_cache = outputs['render_cache'] # JA: All the render outputs have the shape of (1200, 1200)
-        rgb_render_raw = outputs['image']  # Render where missing values have special color
+        rgb_render_raw = outputs['image']  # MJ: image: pred_map = pred_back * (1 - mask) + pred_features * mask, where pred_features = foreground
         depth_render = outputs['depth']
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
         outputs = self.mesh_model.render(background=background,
                                          render_cache=render_cache, use_median=self.paint_step > 1)
-        rgb_render = outputs['image']
-        # Render meta texture map
+        rgb_render = outputs['image'] #MJ: torch.Size([1, 3, 1200, 1200])
+        # Render meta texture map: MJ: the meta texture map stores the z-normals of the triangles of the mesh, which represents the visibility of each triangle of the mesh
         meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                              use_meta_texture=True, render_cache=render_cache)
 
-        z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
-        z_normals_cache = meta_output['image'].clamp(0, 1)
-        edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
+        z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)  #MJ:z_normals: torch.Size([1, 1, 1200, 1200]); outputs['normals']: (1,3,1200,1200)
+        z_normals_cache = meta_output['image'].clamp(0, 1)  #MJ: torch.Size([1, 3, 1200, 1200]); = pred_map = the combination of the foreground (meta_texture_img) and the background
+        edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2] #MJ: It has a shape of (1, 1, 1200, 1200), it contains the 2nd channel of the meta_texture_img
 
         self.log_train_image(rgb_render, 'rendered_input')
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
-        self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
+        self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True) #MJ: z_normals_cache[0, 0]: the 1st channel of    z_normals_cache = meta_output['image'] = the z-normal of each face 
 
         # text embeddings
         if self.cfg.guide.append_direction:
-            dirs = data['dir']  # [B,]
+            dirs = data['dir']  # [B,]; dirs: Size([1])
             text_z = self.text_z[dirs] # JA: dirs is one of the six directions. text_z is the embedding vector of the specific view prompt
             text_string = self.text_string[dirs]
         else:
@@ -257,13 +264,13 @@ class TEXTure:
             text_string = self.text_string
         logger.info(f'text: {text_string}')
 
-        # JA: Create trimap of keep, refine, and generate using the render output
-        update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
+        # JA: Create trimap of keep, refine, and generate using the render output:  #MJ: update_mask is a more "refined" mask than refine_mask (derived from refine_mask)
+        update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw, #MJ:   rgb_render_raw = outputs['image']  # MJ: image: pred_map = pred_back * (1 - mask) + pred_features * mask
                                                                         depth_render=depth_render,
                                                                         z_normals=z_normals,
-                                                                        z_normals_cache=z_normals_cache,
-                                                                        edited_mask=edited_mask,
-                                                                        mask=outputs['mask'])
+                                                                        z_normals_cache=z_normals_cache, #MJ: The meta_texture_img: z_normals_cache = meta_output['image'].clamp(0, 1)
+                                                                        edited_mask=edited_mask, #MJ: The 2nd channel of the meta_texture_img: edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
+                                                                        mask=outputs['mask'])  #MJ: mask with 1 refers to the object area
 
         update_ratio = float(update_mask.sum() / (update_mask.shape[2] * update_mask.shape[3]))
         if self.cfg.guide.reference_texture is not None and update_ratio < 0.01:
@@ -330,7 +337,7 @@ class TEXTure:
                                                                     guidance_scale=self.cfg.guide.guidance_scale,
                                                                     # strength=1.0, update_mask=cropped_update_mask,
                                                                     update_mask=cropped_update_mask,
-                                                                    fixed_seed=self.cfg.optim.seed,
+                                                                    #MJ: fixed_seed=self.cfg.optim.seed, do not use the fixed seed
                                                                     check_mask=checker_mask,
                                                                     intermediate_vis=self.cfg.log.vis_diffusion_steps,
 
@@ -339,7 +346,7 @@ class TEXTure:
                                                                     view_dir=self.view_dirs[dirs], # JA: view_dir = "left", this is used to check if the view direction is front
                                                                     front_image=resized_zero123_cond_image,
                                                                     phi=data['phi'],
-                                                                    theta=data['base_theta'] - data['theta'],
+                                                                    theta=data['base_theta'] - data['theta'], #MJ: data['base_theta']=59.99999999999
                                                                     condition_guidance_scales=condition_guidance_scales)
 
         self.log_train_image(cropped_rgb_output, name='direct_output')
@@ -411,29 +418,29 @@ class TEXTure:
                          depth_render: torch.Tensor,
                          z_normals: torch.Tensor, z_normals_cache: torch.Tensor, edited_mask: torch.Tensor,
                          mask: torch.Tensor):
-        diff = (rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
-            self.device)).abs().sum(axis=1)
-        exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
-
+        diff = ( rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
+            self.device) ).abs().sum(axis=1)  #MJ:self.mesh_model.default_color= list [0.8, 0.1, 0.8] = magenta color
+        exact_generate_mask = (diff < 0.1).float().unsqueeze(0) #MJ: diff: (1,1200,1200);      exact_generate_mask: (1,1,1200,1200)
+        #MJ: If the rendered image region is close to the default color, the magenta,  the region is newly created without using the texture atlas being learned (the initial color of the texture atlas is magenta)=> So it should be generated
         # Extend mask
         generate_mask = torch.from_numpy(
             cv2.dilate(exact_generate_mask[0, 0].detach().cpu().numpy(), np.ones((19, 19), np.uint8))).to(
             exact_generate_mask.device).unsqueeze(0).unsqueeze(0)
 
-        update_mask = generate_mask.clone()
+        update_mask = generate_mask.clone()  #MJ: initialize the update_mask to the generate_mask; it may be changed
 
-        object_mask = torch.ones_like(update_mask)
-        object_mask[depth_render == 0] = 0
+        object_mask = torch.ones_like(update_mask) #MJ: initialize  all pixels of object_mask to one, indicating the object area
+        object_mask[depth_render == 0] = 0 #MJ: But Set the pixels  of the object_mask to zero, where depth_render is 0, that is the background region
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((7, 7), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
 
-        # Generate the refine mask based on the z normals, and the edited mask
+        # Generate the refine mask based on the z normals, and the edited mask (the image of the z-normals (meta_texture_img's G channel))
 
-        refine_mask = torch.zeros_like(update_mask)
-        refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
-        if self.cfg.guide.initial_texture is None:
-            refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0
+        refine_mask = torch.zeros_like(update_mask) #MJ: Initialize  all pixels of refine_mask  to zero (not to be refined); The pixels whose z_normals are greater than the cached ones from the previous view plus the threshold WILL BE refined
+        refine_mask[ z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr ] = 1 #MJ:  z_normals_cache[:, :1, :, :] = the z-normal of the faces= the 1st channel of meta_texture; self.cfg.guide.z_update_thr=0.2 (The normal vectors are unit vectors)
+        if self.cfg.guide.initial_texture is None: #MJ: This is the case in our experiment
+            refine_mask[ z_normals_cache[:, :1, :, :] == 0 ] = 0 #MJ: What does the 1nd channel of z_normals_cache, z_normals_cache[:, :1, :, :], represent? => The z-normals of the faces
         elif self.cfg.guide.reference_texture is not None:
             refine_mask[edited_mask == 0] = 0
             refine_mask = torch.from_numpy(
@@ -452,9 +459,13 @@ class TEXTure:
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             mask.device).unsqueeze(0).unsqueeze(0)
-        update_mask[refine_mask == 1] = 1
+            
+        #MJ: With generate_mask and refine_mask defined, 
+        # Update update_mask which was defined to be  update_mask = generate_mask.clone(); Some regions where two conditions are satisfied
+        # will be updated as follows:    
+        update_mask[refine_mask == 1] = 1 #MJ: Initialize the update_mask to 1 where refine_mask is 1; So the region to be refined is a candidate of the region to be updated
 
-        update_mask[torch.bitwise_and(object_mask == 0, generate_mask == 0)] = 0
+        update_mask[ torch.bitwise_and( object_mask == 0, generate_mask == 0) ] = 0 #MJ: Set update_mask to 0 where is the background region (object_mask=0) and   generate_mask is 0 (keep region)
 
         # Visualize trimap
         if self.cfg.log.log_images:
@@ -479,8 +490,8 @@ class TEXTure:
             self.log_train_image(shaded_rgb_vis, 'shaded_input')
             self.log_train_image(trimap_vis, 'trimap')
 
-        return update_mask, generate_mask, refine_mask
-
+        return update_mask, generate_mask, refine_mask #MJ: update_mask is a more "refined" mask than refine_mask (derived from refine_mask)
+    #MJ: checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),crop(generate_mask))
     def generate_checkerboard(self, update_mask_inner, improve_z_mask_inner, update_mask_base_inner):
         checkerboard = torch.ones((1, 1, 64 // 2, 64 // 2)).to(self.device)
         # Create a checkerboard grid
@@ -500,9 +511,9 @@ class TEXTure:
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
-        render_update_mask = object_mask.clone()
+        render_update_mask = object_mask.clone() #Initialize render_update_mask (from trimap) to the foreground object mask
 
-        render_update_mask[update_mask == 0] = 0
+        render_update_mask[update_mask == 0] = 0 #MJ: Do not update the rendering where update_mask is zero, that is, keep-region
 
         blurred_render_update_mask = torch.from_numpy(
             cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
@@ -512,20 +523,20 @@ class TEXTure:
         # Do not get out of the object
         blurred_render_update_mask[object_mask == 0] = 0
 
-        if self.cfg.guide.strict_projection:
+        if self.cfg.guide.strict_projection: #MJ: This is the case
             blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
-            # Do not use bad normals
+            # Do not use bad normals: z_normals: torch.Size([1, 1, 1200, 1200])
             z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
             blurred_render_update_mask[z_was_better] = 0
 
-        render_update_mask = blurred_render_update_mask
-        self.log_train_image(rgb_output * render_update_mask, 'project_back_input')
+        render_update_mask = blurred_render_update_mask  #MJ: Set render_update_mask to blurred_render_update_mask
+        self.log_train_image(rgb_output * render_update_mask, 'project_back_input') #MJ: rgb_output=cropped_rgb_output
 
-        # Update the normals
+        # Update the z_normals_cache to the maximum from the current z_normals and  z_normals_cache
         z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
 
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
-                                     eps=1e-15)
+                                     eps=1e-15)  #MJ: self.mesh_model.get_params()= [self.background_sphere_colors, self.texture_img, self.meta_texture_img] 
             
         # JA: Create the texture atlas for the mesh using each view. It updates the parameters
         # of the neural network and the parameters are the pixel values of the texture atlas.
@@ -535,29 +546,73 @@ class TEXTure:
         for _ in tqdm(range(200), desc='fitting mesh colors'): # JA: We use 200 epochs
             optimizer.zero_grad()
             outputs = self.mesh_model.render(background=background,
-                                             render_cache=render_cache)
+                                             render_cache=render_cache) #MJ: Render the mesh using the current texture_img, meta_texture_img which is being learned
             rgb_render = outputs['image']
 
             mask = render_update_mask.flatten()
             masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
             masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
-            masked_mask = mask[mask > 0]
-            loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean()
+            masked_mask = mask[mask > 0]  #MJ: "masked" regions are the real meaningful regions
+            loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() #MJ: define the rendering loss
 
             meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                   use_meta_texture=True, render_cache=render_cache)
-            current_z_normals = meta_outputs['image']
-            current_z_mask = meta_outputs['mask'].flatten()
+            current_z_normals = meta_outputs['image'] #MJ: torch.Size([1, 3, 1200, 1200])
+            current_z_mask = meta_outputs['mask'].flatten() #MJ: current_z_mask: torch.Size([1440000]); 1,440,000 = 1200 x 1200
             masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
                                        current_z_mask == 1][:, :1]
             masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
-                                    current_z_mask == 1][:, :1]
-            loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
+                                    current_z_mask == 1][:, :1]  #MJ:  current_z_normals.reshape(1, current_z_normals.shape[1], -1).shape=(1,3,1440000);  z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,                                    current_z_mask == 1]: torch.Size([1, 3, 182750]);  masked_last_z_normals: torch.Size([1, 1, 182750])
+            loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean() #MJ:z_normals_cache: updated at the beginning of project_back func; the loss for the z_normals
             loss.backward() # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
                             # the network, that is, the pixel value of the texture atlas
             optimizer.step()
 
         return rgb_render, current_z_normals
+    
+    #MJ: 
+    #Q:  When computing the gradient vector of loss in loss.backward(), when happens when the tree of tensors in loss do not contain some parameters in self.mesh_model.get_params()?
+    #CHATGPT:
+
+#   If a parameter tensor has requires_grad=True and is included in the computation graph but is not involved in the computation of the loss,
+#   its gradients will still be computed during the backward pass. However, these gradients will be zero because they are not contributing to the loss.
+
+# So, to amend the previous explanation: Gradients are computed for all tensors with requires_grad=True, regardless of whether they are directly 
+# involved in the computation of the loss. However, if a parameter tensor is not contributing to the loss, its gradient will be zero during
+# backpropagation.
+
+# In summary, unused parameter tensors with requires_grad=True will still have their gradients computed during backpropagation,
+# but these gradients will be zero if the parameters are not contributing to the loss. This behavior is consistent with 
+# PyTorch's automatic differentiation mechanism.
+
+# You're correct. Computing gradients for unused parameters can indeed be inefficient, especially if those parameters are not 
+# contributing to the loss and are not being updated during optimization. In such cases, computing gradients for these parameters
+# only adds unnecessary computational 
+# overhead and consumes additional memory.
+
+# To address this inefficiency, one common approach is to detach or exclude the unused parameters from the computation graph during
+# the forward pass, effectively preventing gradients from flowing through them during backpropagation. 
+# This can be achieved by setting requires_grad=False for the unused parameters or by detaching them from the computational graph explicitly.
+
+# By excluding unused parameters from the computation graph, you can reduce unnecessary computations and memory usage, 
+# leading to more efficient training. It's good practice to review the computational graph and ensure that only the relevant parameters 
+# are included in the gradient computation to optimize training efficiency.
+
+# But, I can achieve the same purpose by changing the function  self.mesh_model.get_params()
+# ChatGPT
+# Yes, you're absolutely correct. Adjusting the implementation of self.mesh_model.get_params() is indeed another viable approach to efficiently 
+# handle the computation of gradients for only the relevant parameters.
+
+# By modifying self.mesh_model.get_params() to return only the parameters that are directly involved in the computation of the loss,
+# you ensure that gradients are computed only for those parameters during backpropagation. This approach effectively prevents
+# unnecessary computations and reduces memory usage, leading to more efficient training.
+
+# Therefore, by refining the logic within self.mesh_model.get_params(), you can achieve the same purpose of excluding unused
+# parameters from gradient computation without needing to modify the rest of the training code. This approach offers flexibility 
+# and allows for fine-grained control over which parameters are included in the optimization process, optimizing both computational efficiency 
+# and training effectiveness.
+
+
 
     def log_train_image(self, tensor: torch.Tensor, name: str, colormap=False):
         if self.cfg.log.log_images:

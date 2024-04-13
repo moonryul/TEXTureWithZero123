@@ -122,9 +122,11 @@ class TexturedMeshModel(nn.Module):
 
         self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size),
                                  interpolation_mode=self.opt.texture_interpolation_mode)
+        
         self.env_sphere, self.mesh = self.init_meshes()
+        
         self.default_color = [0.8, 0.1, 0.8] # JA: This is the magenta color, set to the texture atlas
-        self.background_sphere_colors, self.texture_img = self.init_paint() # JA: self.texture_img is a learnable parameter
+        self.background_sphere_colors, self.texture_img = self.init_paint() # JA: self.texture_img is a learnable parameter;MJ: so is  self.background_sphere_colors
         self.meta_texture_img = nn.Parameter(torch.zeros_like(self.texture_img)) # JA: self.texture_img is the texture atlas
                                 # define self.meta_texture_img variable to be the parameter of the neural network whose init
                                 # value is set to a zero tensor
@@ -135,8 +137,12 @@ class TexturedMeshModel(nn.Module):
                     (base_texture.to(self.device) - self.texture_img).abs().sum(axis=1) > 0.1).float()
             with torch.no_grad():
                 self.meta_texture_img[:, 1] = change_mask
-        self.vt, self.ft = self.init_texture_map()
-
+                
+        self.vt, self.ft = self.init_texture_map()  #MJ: self.vt: tex coords per vertex: [N, 2]; 
+                                                     #   self.ft: indices that point to the specific texture coordinates (stored in vt)
+                                                     #            that should be applied to that face: [M, 3]
+        
+        #MJ: Index vertex features to convert per vertex tensor to per vertex per face tensor.
         self.face_attributes = kal.ops.mesh.index_vertices_by_faces(
             self.vt.unsqueeze(0),
             self.ft.long()).detach()
@@ -216,11 +222,11 @@ class TexturedMeshModel(nn.Module):
 
     def init_paint(self, num_backgrounds=1):
         # random color face attributes for background sphere
-        init_background_bases = torch.rand(num_backgrounds, 3).to(self.device)
+        init_background_bases = torch.rand(num_backgrounds, 3).to(self.device) #MJ: The tensor will have a shape of (num_backgrounds, 3), 
         modulated_init_background_bases_latent = init_background_bases[:, None, None, :] * 0.8 + 0.2 * torch.randn(
-            num_backgrounds, self.env_sphere.faces.shape[0],
-            3, self.num_features, dtype=torch.float32).cuda()
-        background_sphere_colors = nn.Parameter(modulated_init_background_bases_latent.cuda())
+            num_backgrounds, self.env_sphere.faces.shape[0], #MJ: self.env_sphere.faces.shape=torch.Size([5120, 3])
+            3, self.num_features, dtype=torch.float32).cuda()  #MJ: ==> torch.Size([1, 5120, 3, 3])
+        background_sphere_colors = nn.Parameter(modulated_init_background_bases_latent.cuda()) #MJ: background_sphere_colors is Parameters trainable?
 
         if self.initial_texture_path is not None:
             texture = torch.Tensor(np.array(Image.open(self.initial_texture_path).resize(
@@ -269,26 +275,42 @@ class TexturedMeshModel(nn.Module):
             logger.info(f'running cached UV maps from {vt_cache}')
             vt = torch.load(vt_cache).cuda()
             ft = torch.load(ft_cache).cuda()
-        else:
+        else: #MJ: self.mesh.ft is null or self.mesh.vt is null: self.mesh does not tex coord indices per face nor tex coords per vertex
+            #Create a texture map by unwraping UVs for the mesh
             logger.info(f'running xatlas to unwrap UVs for mesh')
             # unwrap uvs
             import xatlas
-            v_np = self.mesh.vertices.cpu().numpy()
+            v_np = self.mesh.vertices.cpu().numpy()  #MJ: _np refers to numpy
             f_np = self.mesh.faces.int().cpu().numpy()
+            
             atlas = xatlas.Atlas()
+            
             atlas.add_mesh(v_np, f_np)
+            
             chart_options = xatlas.ChartOptions()
             chart_options.max_iterations = 4
             atlas.generate(chart_options=chart_options)
-            vmapping, ft_np, vt_np = atlas[0]  # [N], [M, 3], [N, 2]
-
+            
+            #Initial Stage ( UV Atlas Creation ) : Starts with the conceptual goal of creating a 2D representation of 
+            #     the model's surface that will be used to apply textures
+            
+            # Execution Stage (Unwrapping UVs): Involves the technical steps of seam identification, flattening, 
+            #      and packing to achieve the goal set out in the UV Atlas Creation stage.
+           
+            
+            vmapping, ft_np, vt_np = atlas[0]  # [N], [M, 3], [N, 2] 
+            #MJ: ft_np: This represents the indices of the texture coordinates for each face of the mesh, in a NumPy array format.
+            #  vt_np: This represents the texture coordinates of the vertices in the mesh, also in a NumPy array format. 
+            # Texture coordinates are used to specify how a texture image is mapped onto the surface of a 3D model. 
+            # They are defined in a 2D coordinate system, usually ranging from 0 to 1,
+            # where (0,0) represents the bottom-left corner of the texture image, and (1,1) represents the top-right corner. 
             vt = torch.from_numpy(vt_np.astype(np.float32)).float().cuda()
             ft = torch.from_numpy(ft_np.astype(np.int64)).int().cuda()
             if cache_path is not None:
                 os.makedirs(cache_path, exist_ok=True)
                 torch.save(vt.cpu(), vt_cache)
                 torch.save(ft.cpu(), ft_cache)
-        return vt, ft
+        return vt, ft  
 
     def forward(self, x):
         raise NotImplementedError
@@ -355,20 +377,20 @@ class TexturedMeshModel(nn.Module):
             fp.write(f'map_Kd {name}albedo.png \n')
 
     def render(self, theta=None, phi=None, radius=None, background=None,
-               use_meta_texture=False, render_cache=None, use_median=False, dims=None):
-        if render_cache is None:
+               use_meta_texture=False, render_cache=None, use_median=False, dims=None): #MJ:  outputs = self.mesh_model.render(background=background, render_cache=render_cache) from project_back
+        if render_cache is None: #MJ: render_cache is not None, the camera viewpoint angles should be provided
             assert theta is not None and phi is not None and radius is not None
-        background_sphere_colors = self.background_sphere_colors[
-            torch.randint(0, self.background_sphere_colors.shape[0], (1,))]
-        if use_meta_texture: # JA: During training of the network, we either learn meta texture or texture
-            texture_img = self.meta_texture_img
+        background_sphere_colors = self.background_sphere_colors[  #MJ: Every time of rendering the mesh, background_sphere_color (learnable parameters) is randomly chosen; The shape =torch.Size([1, 5120, 3, 3])=(B,num_faces, RGB-channels, num_vertices)
+            torch.randint(0, self.background_sphere_colors.shape[0], (1,))] #MJ: (1,): This specifies the shape of the output tensor. In this case, it's a tuple containing only one element (1,), indicating that a single random integer will be generated.
+        if use_meta_texture: # JA: During training of the network, we either learn meta texture or texture; MJ: meta_texture tracks the seen regions and the cross-sections of the faces
+            texture_img = self.meta_texture_img #MJ: In this case, we have background=torch.Tensor([0, 0, 0]).to(self.device),=>[1,1,1] by JA
         else:
             texture_img = self.texture_img  # JA: texture_img is the render image which is actually the
                                             # learnable texture atlas
 
         if self.augmentations:
             augmented_vertices = self.augment_vertices()
-        else:
+        else: #MJ: This is the case in our experiment
             augmented_vertices = self.mesh.vertices
 
         if use_median:
@@ -385,10 +407,10 @@ class TexturedMeshModel(nn.Module):
         if background is not None and type(background) == str: # JA: If background is a string, set it as the type
             background_type = background
             use_render_back = True
-        pred_features, mask, depth, normals, render_cache = self.renderer.render_single_view_texture(augmented_vertices,
+        pred_features, mask, depth, normals, render_cache = self.renderer.render_single_view_texture(augmented_vertices, #MJ: =  self.mesh.vertices
                                                                                                      self.mesh.faces,
                                                                                                      self.face_attributes,
-                                                                                                     texture_img,
+                                                                                                     texture_img, #MJ: self.texture_img or self.meta_texture_img
                                                                                                      elev=theta,
                                                                                                      azim=phi,
                                                                                                      radius=radius,
@@ -403,22 +425,22 @@ class TexturedMeshModel(nn.Module):
             pred_map = pred_features
             pred_back = pred_features
         else:
-            if background is None:
+            if background is None: #MJ: background is not None in our experiment
                 pred_back, _, _ = self.renderer.render_single_view(self.env_sphere,
-                                                                   background_sphere_colors,
+                                                                   background_sphere_colors, #MJ: background_sphere_colors is used here, when background is None; It is not the case of our experiment
                                                                    elev=theta,
                                                                    azim=phi,
                                                                    radius=radius,
                                                                    dims=dims,
                                                                    look_at_height=self.dy, calc_depth=False)
-            elif len(background.shape) == 1:
+            elif len(background.shape) == 1: #MJ:This is the case in our experiment; backtround: torch.Size( [3]) = [0, 0, 0] => [1, 1, 1]
                 pred_back = torch.ones_like(pred_features) * background.reshape(1, 3, 1, 1)
             else:
-                pred_back = background
+                pred_back = background #MJ:       background = torch.Tensor([1, 1, 1]).to(self.device)
 
-            pred_map = pred_back * (1 - mask) + pred_features * mask
+            pred_map = pred_back * (1 - mask) + pred_features * mask  #MJ: pred_features = uv_features = texture_img or meta_texture_img; pred_back tensor is included in pred_map (render_output)
 
-        if not use_meta_texture:
+        if not use_meta_texture: #MJ: When rendering non meta-texture, clamp the resulting image to the range of (0,1)
             pred_map = pred_map.clamp(0, 1)
             pred_features = pred_features.clamp(0, 1)
 
