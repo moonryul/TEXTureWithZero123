@@ -290,20 +290,8 @@ class TexturedMeshModel(nn.Module):
             chart_options = xatlas.ChartOptions()
             chart_options.max_iterations = 4
             atlas.generate(chart_options=chart_options)
-            
-            #Initial Stage ( UV Atlas Creation ) : Starts with the conceptual goal of creating a 2D representation of 
-            #     the model's surface that will be used to apply textures
-            
-            # Execution Stage (Unwrapping UVs): Involves the technical steps of seam identification, flattening, 
-            #      and packing to achieve the goal set out in the UV Atlas Creation stage.
-           
-            
-            vmapping, ft_np, vt_np = atlas[0]  # [N], [M, 3], [N, 2] 
-            #MJ: ft_np: This represents the indices of the texture coordinates for each face of the mesh, in a NumPy array format.
-            #  vt_np: This represents the texture coordinates of the vertices in the mesh, also in a NumPy array format. 
-            # Texture coordinates are used to specify how a texture image is mapped onto the surface of a 3D model. 
-            # They are defined in a 2D coordinate system, usually ranging from 0 to 1,
-            # where (0,0) represents the bottom-left corner of the texture image, and (1,1) represents the top-right corner. 
+            vmapping, ft_np, vt_np = atlas[0]  # [N], [M, 3], [N, 2]
+
             vt = torch.from_numpy(vt_np.astype(np.float32)).float().cuda()
             ft = torch.from_numpy(ft_np.astype(np.int64)).int().cuda()
             if cache_path is not None:
