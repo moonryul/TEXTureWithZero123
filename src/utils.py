@@ -140,11 +140,12 @@ def pad_tensor_to_size(input_tensor, target_height, target_width, value=1):
     
     return padded_tensor
 
+#MJ: Change a tensor to a list
 def split_zero123plus_grid(grid_image, tile_size): #MJ: grid_image: (1,4,120,80); tile_size = 320 ??
     images = []
-    for row in range(3):
-        images_col = []
-        for col in range(2):
+    for col in range(2):
+        #MJ: images_col = []
+        for row in range(3):
             # Calculate the start and end indices for the slices
             start_row = row * tile_size
             end_row = start_row + tile_size
@@ -159,8 +160,8 @@ def split_zero123plus_grid(grid_image, tile_size): #MJ: grid_image: (1,4,120,80)
             else:
                 raise NotImplementedError
 
-            images_col.append(original_image)
+            images.append(original_image)
+            #MJ: images: col0: img0, img1, img2
+            #            col1: img3, img4, img5
 
-        images.append(images_col)
-
-    return images
+    return torch.cat(images) #MJ: convert the list to the tensor along the first dim
