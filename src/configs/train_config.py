@@ -96,6 +96,7 @@ class OptimConfig:
     no_noise: bool = False
     #MJ: added
     epochs: int = 150
+    interleaving: bool = False
 
 
 @dataclass
