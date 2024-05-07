@@ -79,18 +79,18 @@ class TEXTure:
         self.zero123_front_input = None
         
         # Set the camera poses:
-        self.thetas = []
-        self.phis = []
-        self.radii = []
+        self.mesh_model.thetas = []
+        self.mesh_model.phis = []
+        self.mesh_model.radii = []
        
         for i, data in enumerate(self.dataloaders['train']):
             theta, phi, radius = data['theta'], data['phi'], data['radius']
             phi = phi - np.deg2rad(self.cfg.render.front_offset)
             phi = float(phi + 2 * np.pi if phi < 0 else phi)
 
-            self.thetas.append(theta)
-            self.phis.append(phi)
-            self.radii.append(radius)
+            self.mesh_model.thetas.append(theta)
+            self.mesh_model.phis.append(phi)
+            self.mesh_model.radii.append(radius)
 
         augmented_vertices = self.mesh_model.mesh.vertices
 
@@ -109,11 +109,11 @@ class TEXTure:
             background_type='none'
         )
         
-        self.mask = mask #MJ: object_mask of the mesh
-        self.depth_map = depth_map
-        self.normals_image = normals_image
-        self.face_normals = face_normals
-        self.face_idx = face_idx
+        # self.mask = mask #MJ: object_mask of the mesh
+        # self.depth_map = depth_map
+        # self.normals_image = normals_image
+        # self.face_normals = face_normals
+        # self.face_idx = face_idx
 
         logger.info(f'Generating face view map')
 
@@ -381,7 +381,8 @@ class TEXTure:
                 # of the mask to a ones tensor (the tensor is normalized to be between 0 and 1).
                 front_image = rgb_output_front * object_mask_front \
                     + torch.ones_like(rgb_output_front, device=self.device) * (1 - object_mask_front)
-
+                # break #MJ: Generate the front image only in the loop    
+        
             # JA: Even though the legacy function calls self.mesh_model.render for a similar purpose as for what
             # we do below, we still do the rendering again for the front viewpoint outside of the function for
             # the sake of brevity.
@@ -602,6 +603,9 @@ class TEXTure:
             callback_on_step_end=on_step_end
         ).images[0]
 
+
+        #MJ: Now that the images for the 7 views are generated, project back them to construct the texture atlas
+        
         grid_image = torchvision.transforms.functional.pil_to_tensor(result).to(self.device).float() / 255
 
         self.log_train_image(grid_image[None], 'zero123plus_grid_image')
@@ -648,7 +652,7 @@ class TEXTure:
                             nonpadded_area_start_h:nonpadded_area_end_h,
                             nonpadded_area_start_w:nonpadded_area_end_w
                         ]
-                else:
+                else: #MJ: do interpolation to make the depth maps to the standard size
                     cropped_rgb_output = F.interpolate(
                         cropped_rgb_output,
                         (max_h - min_h, max_w - min_w),
@@ -684,11 +688,12 @@ class TEXTure:
         render_cache = outputs['render_cache'] # JA: All the render outputs have the shape of (1200, 1200)
 
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
-        outputs = self.mesh_model.render(background=background,
+        outputs = self.mesh_model.render(theta=thetas, phi=phis, radius=radii,background=background,
                                         render_cache=render_cache, use_median=True)
 
         # Render meta texture map
-        meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+        meta_output = self.mesh_model.render(theta=thetas, phi=phis, radius=radii,
+                                             background=torch.Tensor([0, 0, 0]).to(self.device),
                                             use_meta_texture=True, render_cache=render_cache)
 
         # JA: Get the Z component of the face normal vectors relative to the camera
@@ -697,10 +702,10 @@ class TEXTure:
         object_mask = outputs['mask'] # JA: mask has a shape of 1200x1200
 
         #MJ: Testing self.project_back_only_texture_atlas_max_z_normals:
-        self.project_back_only_texture_atlas(
+        self.project_back_only_texture_atlas(theta=thetas, phi=phis, radius=radii,
             render_cache=render_cache, background=background, rgb_output=torch.cat(rgb_outputs),
             object_mask=object_mask, update_mask=object_mask, z_normals=z_normals, z_normals_cache=z_normals_cache,           
-            weight_masks=self.weight_masks
+           #MJ: commented out for debugging: weight_masks=self.weight_masks
         )
         
         
