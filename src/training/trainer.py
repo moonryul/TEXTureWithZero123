@@ -102,9 +102,9 @@ class TEXTure:
             augmented_vertices[None].repeat(batch_size, 1, 1),
             self.mesh_model.mesh.faces, # JA: the faces tensor can be shared across the batch and does not require its own batch dimension.
             self.mesh_model.face_attributes.repeat(batch_size, 1, 1, 1),
-            elev=torch.tensor(self.thetas).to(self.device),
-            azim=torch.tensor(self.phis).to(self.device),
-            radius=torch.tensor(self.radii).to(self.device),
+            elev=torch.tensor(self.mesh_model.thetas).to(self.device),
+            azim=torch.tensor(self.mesh_model.phis).to(self.device),
+            radius=torch.tensor(self.mesh_model.radii).to(self.device),
             look_at_height=self.mesh_model.dy,
             background_type='none'
         )
@@ -127,9 +127,15 @@ class TEXTure:
         # self.weight_masks = self.get_weight_masks_for_views_loop_maxview1(face_normals, face_idx)
         # self.weight_masks = self.get_weight_masks_for_views_loop_maxview2(face_normals, face_idx)
         
-        face_view_map = self.create_face_view_map( face_idx)
-        self.weight_masks = self.compare_face_normals_between_views(face_view_map, face_normals, face_idx)
+        #MJ: commented out for debugging: face_view_map = self.create_face_view_map( face_idx)
+        # self.weight_masks = self.compare_face_normals_between_views(face_view_map, face_normals, face_idx)
         
+        # JA: It computes the self.meta_texture_img which contains the best z normals of the pixel
+        # images
+        self.project_back_max_z_normals(
+            background=None, object_mask=mask, z_normals=normals_image[:,2:3,:,:],
+            face_normals=face_normals, face_idx=face_idx           
+        )
             
     #MJ: we will create a dict face_map which has the following:
     # {
