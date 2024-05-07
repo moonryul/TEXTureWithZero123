@@ -234,7 +234,7 @@ class TexturedMeshModel(nn.Module):
             look_at_height=look_at_height
         )
         # JA: Since the function prepare_vertices is specifically designed to move and project vertices to camera space and then index them with faces, the face normals returned by this function are also relative to the camera coordinate system. This follows from the context provided by the documentation, where the operations involve transforming vertices into camera coordinates, suggesting that the normals are computed in relation to these transformed vertices and thus would also be in camera coordinates.
-        face_vertices_camera, face_vertices_image, face_normals = kal.render.mesh.prepare_vertices(
+        face_vertices_camera, face_vertices_image, face_normals = kal.render.mesh.prepare_vertices( #MJ: face_vertices_image.shape: torch.Size([7, 98998, 3, 2])
             verts, faces, self.renderer.camera_projection, camera_transform=camera_transform)
         # JA: face_vertices_camera[:, :, :, -1] likely refers to the z-component (depth component) of these coordinates, used both for depth mapping and for determining how textures map onto the surfaces during UV feature generation.
         depth_map, _ = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
@@ -242,7 +242,7 @@ class TexturedMeshModel(nn.Module):
         depth_map = self.renderer.normalize_multiple_depth(depth_map)
 
         uv_features, face_idx = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
-            face_vertices_image, uv_face_attr)
+            face_vertices_image, uv_face_attr)  #MJ:     uv_features.shape: torch.Size([7, 1200, 1200, 2])
         uv_features = uv_features.detach()
     
         mask = (face_idx > -1).float()[..., None] #MJ: face_idx: (7,1200,1200); mask: (7,1200,1200,1) => (7,1,1200,1200) by  mask.permute(0, 3, 1, 2
@@ -257,9 +257,11 @@ class TexturedMeshModel(nn.Module):
         batch_indices = batch_indices.expand(-1, *face_idx.shape[1:])
 
         # Use advanced indexing to gather the results
-        normals_image = face_normals[batch_indices, face_idx]
-
-       
+        normals_image = face_normals[batch_indices, face_idx]  #MJ: face_normals.shape: torch.Size([7, 98998, 3])
+        
+ 
+        #MJ: normals_image.shape: torch.Size([7, 1200, 1200, 3])
+        #MJ: mask: (7,1200,1200,1) => (7,1,1200,1200) by  mask.permute(0, 3, 1, 2
         return mask.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2), normals_image.permute(0, 3, 1, 2), \
                face_normals.permute(0, 2, 1), face_idx[:, None, :, :]
 
@@ -412,13 +414,16 @@ class TexturedMeshModel(nn.Module):
     def forward(self, x):
         raise NotImplementedError
 
+    def get_params(self):
+        return [self.texture_img, self.meta_texture_img]
+    
     def get_params_texture_atlas(self):
         # return [self.background_sphere_colors, self.texture_img, self.meta_texture_img]
         return [self.texture_img]    # JA: In our experiment, self.background_sphere_colors
                                                             # are not used as parameters of the loss function
 
-    def get_params_texture_atlas_max_z_normal(self):
-         return [self.background_sphere_colors, self.texture_img, self.meta_texture_img]
+    def get_params_max_z_normal(self):
+         return [ self.meta_texture_img]
         # return [self.texture_img]    # JA: In our experiment, self.background_sphere_colors
                                                             # are not used as parameters of the loss function
 
@@ -583,7 +588,7 @@ class TexturedMeshModel(nn.Module):
     def render_batch(self, theta=None, phi=None, radius=None, background=None,
                use_meta_texture=False, render_cache=None, use_median=False, dims=None):
         if render_cache is None:
-            batch_size = theta.shape[0]
+            batch_size = theta.shape[0] #MJ: theta should be a tensor, not a list
             assert theta is not None and phi is not None and radius is not None
         else:
             batch_size = render_cache["uv_features"].shape[0]

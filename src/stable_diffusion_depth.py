@@ -367,7 +367,7 @@ class StableDiffusion(nn.Module):
                             if check_mask is not None and i < int(len(timesteps) * check_mask_iters):
                                 curr_mask = check_mask
                             else:
-                                curr_mask = update_mask # JA: update_mask means "refine" in the paper
+                                curr_mask = update_mask # JA: update_mask means "refine" in the paper => True (MJ)
 
                             # JA: This corresponds to the formula 1 of the equation paper.
                             # z_i ← z_i * m_blended + z_Q_t * (1 − m_blended)

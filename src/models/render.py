@@ -24,6 +24,11 @@ class Renderer:
         z = r * torch.sin(elev) * torch.cos(azim)
 
         pos = torch.tensor([x, y, z]).unsqueeze(0)
+        #MJ: torch.tensor teis to interpret each item in the list as a scalar value;
+        # To combine multiple tensors into a single tensor along a new dimension, 
+        # you should use either torch.stack or torch.cat depending on the desired shape:
+        # torch.stack: Combines tensors along a new dimension (e.g., converts three 1D tensors into a single 2D tensor).
+        # torch.cat: Concatenates tensors along an existing dimension (e.g., concatenates two 2D tensors into a larger 2D tensor).
         look_at = torch.zeros_like(pos)
         look_at[:, 1] = look_at_height
         camera_up_direction = torch.tensor([0.0, 1.0, 0.0]).unsqueeze(0)
@@ -179,7 +184,16 @@ class Renderer:
         elif background_type == 'random':
             image_features += torch.rand((1,1,1,3)).to(self.device) * (1 - mask)
 
-        normals_image = face_normals[0][face_idx, :]
+        #MJ: normals_image = face_normals[0][face_idx, :] => it should be changed as follows:
+        
+        #MJ: In the line normals_image = face_normals[0][face_idx, :], if face_idx contains negative values and is used directly, 
+        # it will lead to unintended behavior.
+        # The negative index would attempt to access an element from the end of face_normals, 
+        # potentially retrieving incorrect normal data or leading to an error if not handled correctly.
+        # Prepare normals for only valid indices
+        valid_indices_mask = (face_idx >= 0) #MJ: face_idx: shape =(7,1200,1200,1)
+        normals_image = torch.zeros_like(face_idx).repeat(1, 1,1,3)  # The shape change:  (7,1200,1200,1) => (7,1200,1200,3)
+        normals_image[valid_indices_mask] = face_normals[0][face_idx[valid_indices_mask], :]
 
         render_cache = {'uv_features':uv_features, 'face_normals':face_normals,'face_idx':face_idx, 'depth_map':depth_map}
 
@@ -202,21 +216,33 @@ class Renderer:
             # JA: face_vertices_camera[:, :, :, -1] likely refers to the z-component (depth component) of these coordinates, used both for depth mapping and for determining how textures map onto the surfaces during UV feature generation.
             depth_map, _ = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
                                                               face_vertices_image, face_vertices_camera[:, :, :, -1:]) 
-            depth_map = self.normalize_multiple_depth(depth_map)
+            depth_map = self.normalize_multiple_depth(depth_map)  #MJ: face_vertices_camera[:, :, :, -1:].shape=torch.Size([7, 98998, 3, 1])
 
             uv_features, face_idx = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
-                face_vertices_image, uv_face_attr)
+                face_vertices_image, uv_face_attr)  #MJ: uv_face_attr.shape: torch.Size([7, 98998, 3, 2])
+            #MJ:  face_vertices_z =  face_vertices_camera[:, :, :, -1],
+             #    face_vertices_image:  2D positions of the face vertices on image plane,
+            #    of shape :math:`(\text{batch_size}, \text{num_faces}, 3, 2)`,
+            #   Features (per-vertex per-face) to be drawn = uv_face_attr: of shape :math:`(\text{batch_size}, \text{num_faces}, 3, \text{feature_dim})`
             uv_features = uv_features.detach()
+            #MJ: The uv_features tensor, having a shape of (7, 1200, 1200, 2), represents the UV coordinates 
+            # for texture mapping over the mesh surfaces in the 3D scene. 
+            # The fourth dimension (2) contains pairs of UV coordinates for each pixel
 
         else:
             # logger.info('Using render cache')
             face_normals, uv_features, face_idx, depth_map = render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['depth_map']
+       
         mask = (face_idx > -1).float()[..., None]
-
+        #MJ: Each projected point (or pixel) on the 2D image is linked back to a point on the 3D surface, 
+        # which has a specific UV coordinate pair (U, V).
+        # uv_features: This tensor contains the UV coordinates (U, V) for each pixel in the projected 2D image.
+        #The function reads the color values from the texture_map based on these coordinates 
+        # and assigns them to the pixels in the projected 2D image.
         image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=self.interpolation_mode)
                         # JA: Interpolates texture_maps by dense or sparse texture_coordinates (uv_features).
                         # This function supports sampling texture coordinates for:
-                        # 1. An entire 2D image
+                        # 1. An entire 2D image: texture_map: (7,3,1024,1024) => image_features.shape: torch.Size([7, 1200, 1200, 3])
                         # 2. A sparse point cloud of texture coordinates.
 
         image_features = image_features * mask # JA: image_features refers to the render image
