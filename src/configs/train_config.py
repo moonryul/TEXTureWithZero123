@@ -94,6 +94,8 @@ class OptimConfig:
     max_timestep: float = 0.98
     # For Diffusion model
     no_noise: bool = False
+    
+    learn_max_z_normals: bool = False
 
 
 @dataclass
