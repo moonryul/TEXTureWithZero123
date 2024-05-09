@@ -15,6 +15,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+#MJ: commented out for debugging: from torch_scatter import scatter_max
+
 import torchvision
 from PIL import Image
 from diffusers import DiffusionPipeline, EulerAncestralDiscreteScheduler, ControlNetModel
@@ -24,9 +26,7 @@ from src.configs.train_config import TrainConfig
 from src.models.textured_mesh import TexturedMeshModel
 from src.stable_diffusion_depth import StableDiffusion
 from src.training.views_dataset import Zero123PlusDataset, ViewsDataset, MultiviewDataset
-from src.utils import make_path, tensor2numpy, pad_tensor_to_size, split_zero123plus_grid_to_components, \
-                                 combine_components_to_zero123plus_grid 
-
+from src.utils import make_path, tensor2numpy, pad_tensor_to_size, split_zero123plus_grid
 
 
 class TEXTure:
@@ -61,7 +61,76 @@ class TEXTure:
                                  1) / 255.0
 
         self.zero123_front_input = None
+        
+        # Set the camera poses:
+        
+        
+        # Set the camera poses:
+        self.mesh_model.thetas = []
+        self.mesh_model.phis = []
+        self.mesh_model.radii = []
+       
+        for i, data in enumerate(self.dataloaders['train']):
+            theta, phi, radius = data['theta'], data['phi'], data['radius']
+            phi = phi - np.deg2rad(self.cfg.render.front_offset)
+            phi = float(phi + 2 * np.pi if phi < 0 else phi)
 
+            self.thetas.append(theta)
+            self.phis.append(phi)
+            self.radii.append(radius)
+            
+        #MJ: check if we use project_back_max_z_normals to learn the max_z_normals texture map   
+        if self.cfg.optim.learn_max_z_normals:
+           
+             #MJ:  use project_back_max_z_normals to learn the max_z_normals texture map   
+             self.project_back_max_z_normals()  
+             #MJ: Render using the learned self.meta_texture_img             
+             meta_outputs = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii,
+                                                   background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                   use_meta_texture=True, render_cache=None)
+             z_normals = meta_outputs["normals"][:,-1,:,:].clamp(0, 1)
+             max_z_normals = meta_outputs['image'].clamp(0, 1) #MJ: z_normals = outputs['normal'][:,-1,:,:]
+             self.view_weights = self.compute_view_weights(z_normals, max_z_normals )
+         
+        
+            
+        else:
+                
+            augmented_vertices = self.mesh_model.mesh.vertices
+
+            batch_size = len(self.dataloaders['train'])
+            # JA: We need to repeat several tensors to support the batch size.
+            # For example, with a tensor of the shape, [1, 3, 1200, 1200], doing
+            # repeat(batch_size, 1, 1, 1) results in [1 * batch_size, 3 * 1, 1200 * 1, 1200 * 1]
+            mask, depth_map, normals_image,face_normals,face_idx = self.mesh_model.render_face_normals_face_idx(
+                augmented_vertices[None].repeat(batch_size, 1, 1),
+                self.mesh_model.mesh.faces, # JA: the faces tensor can be shared across the batch and does not require its own batch dimension.
+                self.mesh_model.face_attributes.repeat(batch_size, 1, 1, 1),
+                elev=torch.tensor(self.thetas).to(self.device),
+                azim=torch.tensor(self.phis).to(self.device),
+                radius=torch.tensor(self.radii).to(self.device),
+                look_at_height=self.mesh_model.dy,
+                background_type='none'
+            )
+            
+            self.mask = mask #MJ: object_mask of the mesh
+            self.depth_map = depth_map
+            self.normals_image = normals_image
+            self.face_normals = face_normals
+            self.face_idx = face_idx
+
+            logger.info(f'Generating face view map')
+
+            #MJ: get the binary masks for each view which indicates how much the image rendered from each view
+            # should contribute to the texture atlas over the mesh which is the cause of the image
+            face_view_map = self.create_face_view_map(face_idx)
+
+            # logger.info(f'Creating weight masks for each view')
+            weight_masks = self.compare_face_normals_between_views(face_view_map, face_normals, face_idx)
+
+            self.view_weights  = weight_masks
+
+        
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
         
         
@@ -82,6 +151,107 @@ class TEXTure:
         image = image / 0.5 * 0.8
         return image
 
+
+    def create_face_view_map(self, face_idx):
+        num_views, _, H, W = face_idx.shape  # Assume face_idx shape is (B, 1, H, W)
+
+        # Flatten the face_idx tensor to make it easier to work with
+        face_idx_flattened_2d = face_idx.view(num_views, -1)  # Shape becomes (num_views, H*W)
+
+        # Get the indices of all elements
+        # JA: From ChatGPT:
+        # torch.meshgrid is used to create a grid of indices that corresponds to each dimension of the input tensor,
+        # specifically in this context for the view indices and pixel indices. It allows us to pair each view index
+        # with every pixel index, thereby creating a full coordinate system that can be mapped directly to the values
+        # in the tensor face_idx.
+        view_by_pixel_indices, pixel_by_view_indices = torch.meshgrid(
+            torch.arange(num_views, device=face_idx.device),
+            torch.arange(H * W, device=face_idx.device),
+            indexing='ij'
+        )
+
+        # Flatten indices tensors
+        view_by_pixel_indices_flattened = view_by_pixel_indices.flatten()
+        pixel_by_view_indices_flattened = pixel_by_view_indices.flatten()
+
+        faces_idx_view_pixel_flattened = face_idx_flattened_2d.flatten()
+
+        # Convert pixel indices back to 2D indices (i, j)
+        pixel_i_indices = pixel_by_view_indices_flattened // W
+        pixel_j_indices = pixel_by_view_indices_flattened % W
+
+        # JA: The original face view map is made of nested dictionaries, which is very inefficient. Face map information
+        # is implemented as a single tensor which is efficient. Only tensors can be processed in GPU; dictionaries cannot
+        # be processed in GPU.
+        # The combined tensor represents, for each pixel (i, j), its view_idx 
+        combined_tensor_for_face_view_map = torch.stack([
+            faces_idx_view_pixel_flattened,
+            view_by_pixel_indices_flattened,
+            pixel_i_indices,
+            pixel_j_indices
+        ], dim=1)
+
+        # Filter valid faces
+        faces_idx_valid_mask = faces_idx_view_pixel_flattened >= 0
+
+        # JA:
+        # [[face_id_1, view_1, i_1, j_1]
+        #  [face_id_1, view_1, i_2, j_2]
+        #  [face_id_1, view_1, i_3, j_3]
+        #  [face_id_1, view_2, i_4, j_4]
+        #  [face_id_1, view_2, i_5, j_5]
+        #  ...
+        #  [face_id_2, view_1, i_k, j_l]
+        #  [face_id_2, view_1, i_{k + 1}, j_{l + 1}]
+        #  [face_id_2, view_2, i_{k + 2}, j_{l + 2}]]
+        #  ...
+        # The above example shows face_id_1 is projected, under view_1, to three pixels (i_1, j_1), (i_2, j_2), (i_3, j_3)
+        # Shape is Nx4 where N is the number of pixels (no greater than H*W*num_views = 1200*1200*7) that projects the
+        # valid face ID.
+        return combined_tensor_for_face_view_map[faces_idx_valid_mask]
+
+    def compare_face_normals_between_views(self,face_view_map, face_normals, face_idx):
+        num_views, _, H, W = face_idx.shape
+        weight_masks = torch.full((num_views, 1, H, W), True, dtype=torch.bool, device=face_idx.device)
+
+        face_ids = face_view_map[:, 0] # JA: face_view_map.shape = (H*W*num_views, 4) = (1200*1200*7, 4) = (10080000, 4)
+        views = face_view_map[:, 1]
+        i_coords = face_view_map[:, 2]
+        j_coords = face_view_map[:, 3]
+        z_normals = face_normals[views, 2, face_ids] # JA: The shape of face_normals is (num_views, 3, num_faces)
+                                                     # For example, face_normals can be (7, 3, 14232)
+                                                     # z_normals is (N,)
+
+        # Scatter z-normals into the tensor, ensuring each index only keeps the max value
+        # JA: z_normals is the source/input tensor, and face_ids is the index tensor to scatter_max function.
+        max_z_normals_over_views, _ = scatter_max(z_normals, face_ids, dim=0) # JA: N is a subset of length H*W*num_views
+        # The shape of max_z_normals_over_N is the (num_faces,). The shape of the scatter_max output is equal to the
+        # shape of the number of distinct indices in the index tensor face_ids.
+
+        # Map the gathered max normals back to the respective face ID indices
+        # JA: max_z_normals_over_views represents the max z normals over views for every face ID.
+        # The shape of face_ids is (N,). Therefore the shape of max_z_normals_over_views_per_face is also (N,).
+        max_z_normals_over_views_per_face = max_z_normals_over_views[face_ids]
+
+        # Calculate the unworthy mask where current z-normals are less than the max per face ID
+        unworthy_pixels_mask = z_normals < max_z_normals_over_views_per_face
+
+        # JA: Update the weight masks. The shapes of face_view_map, whence views, i_coords, and j_coords were extracted
+        # from, all have the shape of (N,), which represents the number of valid pixel entries. Therefore,
+        # weight_masks[views, 0, i_coords, j_coords] will also have the shape of (N,) which allows the values in
+        # weight_masks to be set in an elementwise manner.
+        #
+        # weight_masks[views[0], 0, i_coords[0], j_coords[0]] = ~(unworthy_pixels_mask[0])
+        # The above variable represents whether the pixel (i_coords[0], j_coords[0]) under views[0] is worthy to
+        # contribute to the texture atlas.
+        weight_masks[views, 0, i_coords, j_coords] = ~(unworthy_pixels_mask)
+
+        # weight_masks[views[0], 0, i_coords[0], j_coords[0]] = ~(unworthy_pixels_mask[0])
+        # weight_masks[views[1], 0, i_coords[1], j_coords[1]] = ~(unworthy_pixels_mask[1])
+        # weight_masks[views[2], 0, i_coords[2], j_coords[2]] = ~(unworthy_pixels_mask[2])
+        # weight_masks[views[3], 0, i_coords[3], j_coords[2]] = ~(unworthy_pixels_mask[3])
+
+        return weight_masks
 
     def init_mesh_model(self) -> nn.Module:
         # fovyangle = np.pi / 6 if self.cfg.guide.use_zero123plus else np.pi / 3
@@ -290,6 +460,9 @@ class TEXTure:
             torch.cat((cropped_depths_rgba[2], cropped_depths_rgba[5]), dim=3),
             torch.cat((cropped_depths_rgba[3], cropped_depths_rgba[6]), dim=3),
         ), dim=2)
+
+        self.log_train_image(cropped_front_image, 'cropped_front_image')
+        self.log_train_image(cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
 
         self.log_train_image(self.cropped_front_image, 'cropped_front_image')
         self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
@@ -1161,7 +1334,9 @@ class TEXTure:
     def project_back_only_texture_atlas(self,  thetas: List[float], phis: List[float], radii: List[float], 
                                         render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
-                     z_normals_cache: torch.Tensor):
+                     z_normals_cache: torch.Tensor,
+                     view_weights
+                     ):
         eroded_masks = []
         for i in range(object_mask.shape[0]):  # Iterate over the batch dimension
             eroded_mask = cv2.erode(object_mask[i, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))

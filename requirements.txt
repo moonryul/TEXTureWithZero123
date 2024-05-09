@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 asttokens==2.4.1
 blinker==1.7.0
 click==8.1.7
@@ -74,3 +75,16 @@ widgetsnbextension==4.0.10
 wrapt==1.16.0
 xatlas==0.0.9
 zipp==3.18.1
+=======
+accelerate
+huggingface-hub
+ninja
+xatlas
+matplotlib
+pyrallis
+loguru
+tqdm
+einops
+opencv-python
+diffusers==0.20.0
+>>>>>>> 7da0ff821b424fd7b8176052d6f67d65ef4efd3f
