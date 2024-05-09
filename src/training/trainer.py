@@ -551,6 +551,18 @@ class TEXTure:
         self.rgb_render_small_allviews = F.interpolate(self.rgb_render_raw_allviews, (320, 320), mode='bilinear', align_corners=False)
 
         preprocessed_rgb_render_small_allviews = self.zero123plus.image_processor.preprocess(self.rgb_render_small_allviews) #MJ: rgb_render_small=nan;  rgb_render_small  (320,320)  in range of [0,1] => [-1,1]; handles Pil, ndarray, Tensor image
+        #MJ: ??
+        ## confer (from TEXTure code)
+        #   # JA: inputs is the "cropped_input" which represents the non-zero region of the rendered image of the current texture atlas
+        #     pred_rgb_small = F.interpolate(inputs, (image_size, image_size), mode='bilinear',
+        #                                  align_corners=False) # JA: Shape of inputs is (827, 827)
+
+        #     # if self.second_model_type in ["zero123", "control_zero123"] and view_dir != "front":
+        #     #     latents = None#torch.randn((64, 64), device=self.device)
+        #     # else:
+        #     latents = self.encode_imgs(pred_rgb_small) # JA: Convert the rgb_render_output to the latent space of shape 64x64
+
+
 
         self.gt_latents_rendered_allviews = self.scale_latents(
             self.zero123plus.vae.encode(  #MJ: encode the rendered gt image: (B,3,H,W) => (B,4,H/8, W/8)
@@ -701,11 +713,64 @@ class TEXTure:
                 decoded_unscaled_image_allviews = self.unscale_image( pipeline.vae.decode( unscaled_latents_allviews.half() / pipeline.vae.config.scaling_factor, return_dict=False)[0] )
                 #MJ: Unscaling image means restoring to the original state: The scaled images are normalized ones for traning: Tensor decoded_unscaled_image ranges over [0,1] 
                                                    
-                
+                postprocessed_image = pipeline.image_processor.postprocess( decoded_unscaled_image_allviews, output_type="pt")   
                 #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
                 #MJ: 
-                noisy_rgb_outputs_allviews = F.interpolate( decoded_unscaled_image_allviews , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
-            
+                
+                grid_image_tensor = postprocessed_image
+                #MJ: grid_image (tensor): shape = (3, 960,640) <= PIL size (640, 960)
+                for i in range( blended_latents_allviews[1:].shape[0]):
+                    self.log_train_image(grid_image_tensor[i][None], 'zero123plus_grid_tensor_image')
+                
+                tile_size = 320
+                grid_image_batch  = split_zero123plus_grid_to_components(grid_image_tensor, tile_size) 
+
+                rgb_outputs = []
+                for i in range(   grid_image_batch.shape[0] ):
+                    
+                    cropped_rgb_output_small =   grid_image_batch[i][None]
+
+                    # JA: Since Zero123++ requires cond tensor and each depth tensor to be of size 320x320, we resize this
+                    # to match what it used to be prior to scaling down.
+                    cropped_rgb_output = F.interpolate(
+                        cropped_rgb_output_small,
+                        (max_cropped_image_height, max_cropped_image_width),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                    
+                    min_h, min_w, max_h, max_w = utils.get_nonzero_region( self.object_mask_allviews[i][0] )             
+                                                
+                    cropped_rgb_output = F.interpolate(
+                        cropped_rgb_output,
+                        (max_h - min_h, max_w - min_w),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+
+                    # JA: We initialize rgb_output, the image where cropped_rgb_output will be "pasted into." Since the
+                    # renderer produces tensors (depth maps, object mask, etc.) with a height and width of 1200, rgb_output
+                    # is initialized with the same size so that it aligns pixel-wise with the renderer-produced tensors.
+                    # Because Zero123++ generates non-transparent images, that is, images without an alpha channel, with
+                    # a background of rgb(0.5, 0.5, 0.5), we initialize the tensor using torch.ones and multiply by 0.5.
+                    rgb_output = torch.ones(
+                        cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], 1200, 1200
+                    ).to(rgb_output.device) * 0.5
+
+                    rgb_output[:, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
+
+                    rgb_output = F.interpolate(rgb_output, (1200, 1200), mode='bilinear', align_corners=False)
+
+                    rgb_outputs.append(rgb_output)
+
+                    #End   for i in range(   grid_image_batch.shape[0] )
+                    # cf:  callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
+                    
+                #End  for i in range(   grid_image_batch.shape[0] )    
+                rgb_outputs_tensor = torch.cat(rgb_outputs)                      
+                rgb_outputs_otherviews = F.interpolate( rgb_outputs_tensor , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
+                    
+                rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])    
                 # JA: Create trimap of keep, refine, and generate using the render output
                 #MJ: update_masks is not used; it is the same as object_mask = outputs['mask'] #
                 # update_masks.append(viewpoint_data[i]["update_mask"])  
@@ -776,20 +841,22 @@ class TEXTure:
                     
                     unscaled_latents_otherviews  = self.unscale_latents( blended_latents_allviews[1:] )
                     #In Zero123Plus, the images are also scaled for training.
-                    decoded_image =  pipeline.vae.decode(unscaled_latents_otherviews.half() / pipeline.vae.config.scaling_factor).decoded
-                   #  after denoising, they are unscaled
-                    decoded_unscaled_image_otherviews = self.unscale_image( decoded_image )
-                    #MJ: Unscaling image means restoring to the original state: The scaled images are normalized ones for traning: Tensor decoded_unscaled_image ranges over [0,1] 
+                    decoded_image =  pipeline.vae.decode(unscaled_latents_otherviews.half() / pipeline.vae.config.scaling_factor)[0] #MJ: or .sample
+                   #  after denoising, they are unscaled: decoded_image.min()=-0.9849; decoded_image.max()=0.8354: 
+                    decoded_unscaled_image_otherviews = self.unscale_image( decoded_image ) #MJ: decoded_unscaled_image: min=-1.57; max=1.3369
+            
                          
-                    postprocessed_image = pipeline.image_processor.postprocess( decoded_unscaled_image_otherviews, output_type="pil")                    
+                    postprocessed_image = pipeline.image_processor.postprocess( decoded_unscaled_image_otherviews, output_type="pt")   
+                    #MJ: When output_type ='pt' (Pytorch), postprocessed_image ranges over (0,1)                 
                     
-                    grid_image_tensor = torchvision.transforms.functional.pil_to_tensor(postprocessed_image).to(self.device).float() / 255
-                    #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
-                    #MJ: 
+                    # grid_image_tensor = torchvision.transforms.functional.pil_to_tensor(postprocessed_image).to(self.device).float() / 255
+                    # #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
+                    # #MJ: 
                     
-                    
+                    grid_image_tensor = postprocessed_image
                     #MJ: grid_image (tensor): shape = (3, 960,640) <= PIL size (640, 960)
-                    self.log_train_image(grid_image_tensor[None], 'zero123plus_grid_tensor_image')
+                    for i in range( blended_latents_allviews[1:].shape[0]):
+                        self.log_train_image(grid_image_tensor[i][None], 'zero123plus_grid_tensor_image')
                     
                     tile_size = 320
                     grid_image_batch  = split_zero123plus_grid_to_components(grid_image_tensor, tile_size) 
