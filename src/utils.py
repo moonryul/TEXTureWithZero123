@@ -184,25 +184,25 @@ def combine_components_to_zero123plus_grid(components, tile_size): #MJ: grid_ima
 
     return  grid_image.to(components.device) #MJ: convert the list to the tensor along the first dim
 
-def split_zero123plus_grid_to_components(grid_image, tile_size): #MJ: grid_image: (1,4,120,80); tile_size 
+def split_zero123plus_grid_to_components(grid_image, tile_size): #MJ: grid_image: (1,4,120,80); tile_size of component
     num_rows = grid_image.shape[2] // tile_size
     num_cols =  grid_image.shape[3] // tile_size
-    ## Initialize components tensor to hold the slices; dimensions [number of tiles, channels, tile_size, tile_size]
+    ## Initialize components tensor to hold the tiles; dimensions [number of tiles, channels, tile_size, tile_size]
     components = torch.empty( num_rows * num_cols, grid_image.shape[1], tile_size, tile_size )
     for col in range(num_cols):
         #MJ: images_col = []
         for row in range(num_rows):
-            # Calculate the start and end indices for the slices
+            # Calculate the start and end indices for the tiles
             start_row = row * tile_size
             end_row = start_row + tile_size
             start_col = col * tile_size
             end_col = start_col + tile_size
 
-           # Assign the sliced grid image to the corresponding position in components
+           # Assign the tiled grid image to the corresponding position in components
             idx = row * num_cols + col
             components[ idx ] = grid_image[:,:, start_row:end_row, start_col:end_col]
            
             #MJ: images: col0: img0, img1, img2
             #            col1: img3, img4, img5
 
-    return  components.to(grid_image.device) #MJ: convert the list to the tensor along the first dim
+    return  components.to(grid_image.device) 

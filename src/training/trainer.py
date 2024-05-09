@@ -221,11 +221,19 @@ class TEXTure:
        
         self.rgb_output_front = self.output_frontview['image'] #MJ:  self.rgb_output_front.shape: torch.Size([1, 3, 1200, 1200])
         self.object_mask_front =  self.output_frontview['mask']
+        #MJ self.depth_front = self.output_frontview['depth'] #MJ: convert the depth map from sd format to zero123++ format
                 
         self.clean_front_image = self.rgb_output_front * self.object_mask_front \
                     + torch.ones_like(self.rgb_output_front, device=self.device) * (1 - self.object_mask_front)
                     
-           
+        #MJ: crop the front view image to the object mask size
+        min_h, min_w, max_h, max_w = utils.get_nonzero_region(self.object_mask_front[0, 0])
+        
+        crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+        
+        self.cropped_front_image = crop(self.clean_front_image)
+                    
+        #MJ: Render all views (including the front view)   
         self.output_rendered_allviews = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=self.background) #MJ: Why not providing the multiple viewponits as a batch
         
 
@@ -246,23 +254,50 @@ class TEXTure:
         
         # JA: The generated depth only has one channel, but the Zero123++ pipeline requires an RGBA image.
         # The mask is the object mask, such that the background has value of 0 and the foreground a value of 1.
-        self.depth_rgba_allviews = torch.cat((self.depth_allviews, self.depth_allviews, self.depth_allviews, self.object_mask_allviews), dim=1)
+        self.depth_rgba_otherviews = torch.cat((self.depth_allviews[1:], self.depth_allviews[1:], self.depth_allviews[1:], self.object_mask_allviews[1:]), dim=1)
         #MJ: self.depth_rgba_allviews.shape: torch.Size([7, 4, 1200, 1200])
-        
-        min_h, min_w, max_h, max_w = utils.get_nonzero_region(self.object_mask_front[0, 0])
-        
-        crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
-        
-        cropped_front_image = crop(self.clean_front_image)
+             
 
-        self.zero123plus_cond = pad_tensor_to_size(cropped_front_image, 1200, 1200, value=1) 
-        # JA: pad the front view image with ones so that the resulting image will be 1200x1200. 
-        # This makes the background white;                                                                                          # This is new code. cropped_front_image is the cropped version. In control zero123 pipeline, zero123_front_input is used without padding
+        #MJ: get the cropped depth images to the object mask sizes
+        max_cropped_image_height, max_cropped_image_width = 0, 0
+        cropped_depth_sizes = []
+        cropped_depths_rgba = []
+        for i in range( self.depth_rgba_allviews.shape[0] ):
+            min_h, min_w, max_h, max_w = utils.get_nonzero_region( self.object_mask_allviews[i][0] )             
+            crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+        
+            cropped_depth_rgba  = crop( self.depth_rgba_allviews[i] )
+             
+            max_cropped_image_height = max(max_cropped_image_height,  cropped_depth_rgba.shape[2] )
+            max_cropped_image_width = max(max_cropped_image_width, cropped_depth_rgba.shape[3])
 
-        # JA: depths_rgba_allviews is a tensor that arranges the rows of the depth map, row by row
-        # These depths are not cropped versions
-        tile_size = self.depth_rgba_allviews.shape[2]  #MJ: the height = 1200
-        self.depth_grid = combine_components_to_zero123plus_grid(self.depth_rgba_allviews, tile_size)
+            cropped_depths_rgba.append(cropped_depth_rgba)
+            
+         #MJ: interplate the depth maps to the max size
+        for i in range( self.depth_rgba_allviews.shape[0] ):
+            cropped_depths_rgba[i] = F.interpolate(
+                        cropped_depth_rgba[i],
+                        (max_cropped_image_height, max_cropped_image_width),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+        
+         # JA: cropped_depths_rgba is a list that arranges the rows of the depth map, row by row
+        self.cropped_depth_grid = torch.cat((
+            torch.cat((cropped_depths_rgba[1], cropped_depths_rgba[4]), dim=3),
+            torch.cat((cropped_depths_rgba[2], cropped_depths_rgba[5]), dim=3),
+            torch.cat((cropped_depths_rgba[3], cropped_depths_rgba[6]), dim=3),
+        ), dim=2)
+
+        self.log_train_image(self.cropped_front_image, 'cropped_front_image')
+        self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
+
+                                                                                     # This is new code. cropped_front_image is the cropped version. In control zero123 pipeline, zero123_front_input is used without padding
+
+        # # JA: depths_rgba_allviews is a tensor that arranges the rows of the depth map, row by row
+        # # These depths are not cropped versions
+        # tile_size = self.depth_rgba_allviews.shape[2]  #MJ: the height = 1200
+        # self.depth_grid = combine_components_to_zero123plus_grid(self.depth_rgba_allviews, tile_size)
 
         #MJ: self.depth_rgba_allviews[1].shape: torch.Size([4, 1200, 1200])
         # JA: From: https://pytorch.org/vision/main/generated/torchvision.transforms.ToPILImage.html
@@ -273,36 +308,43 @@ class TEXTure:
         # size – The requested size in pixels, as a 2-tuple: (width, height).
 
         # JA: Zero123++ was trained with 320x320 images: https://github.com/SUDO-AI-3D/zero123plus/issues/70: 1200 => 
-        self.cond_image = torchvision.transforms.functional.to_pil_image( self.zero123plus_cond[0] ).resize((320, 320))
-        self.depth_grid_image = torchvision.transforms.functional.to_pil_image( self.depth_grid[0] ).resize((640, 960))
+        self.cond_image = torchvision.transforms.functional.to_pil_image( self.cropped_front_image[0]).resize((320, 320))
+        self.depth_grid_image = torchvision.transforms.functional.to_pil_image(self.cropped_depth_grid[0] ).resize((640, 960))
 
-        #MJ: front_image is a full resolution (1200,1200) image which will be considered 
-        # as one of the view images including 3x2 view images from zero123plus pipeline
-                    
-        self.front_image_small_pixelspace  =  \
-                           F.interpolate(self.clean_front_image, (320, 320), mode='nearest') #MJ: (1,3,1200,1200) => (1,3,320,320)
+        #MJ: Transform the rendered gt images for each view into the latent space so that they can blended with the latent images generated by the
+        # image gneration pipeline, the sd depth pipeline for the front view and the zero123++ (depth) pipeline for the other views.
         
-                            
+         #MJ: When the generated latent tensor is decoded, the Zero123++ pipeline 
+        # performs operations in the process of turning the latent space tensor z into pixel space
+        # tensor x in the following manner:
+        #   x = postprocess(unscale_image( vae_decode(unscale_latents(z)   /  self.vae.config.scaling_factor)))
+        # In order to encode space tensor x into latent space tensor z, the inverse must be
+        # applied in the following manner:
+        #   z = scale_latents( vae_encode( scale_image(preprocess(x))) * self.vae.config.scaling_factor )
+        
+        #1) As the first step of the transformation, change the size of an image to that of the images assumed by the zero123++                    
+        self.front_image_small_pixelspace  =  \
+                           F.interpolate(self.clean_front_image, (320, 320), mode='bilinear', align_corners=False) 
+                           #MJ: (1,3,1200,1200) => (1,3,320,320)
+        
+        #2) Process the image format etc                    
         self.preprocessed_front_image_small  = self.zero123plus.image_processor.preprocess(self.front_image_small_pixelspace) 
         #MJ:    preprocessed_front_image:  shape = (1,3,1200,1200) 
                     
-        # JA: When the generated latent tensor is denoised entirely, the Zero123++ pipeline uniquely
-        # performs operations in the process of turning the latent space tensor z into pixel space
-        # tensor x in the following manner:
-        #   x = postprocess(unscale_image(vae_decode(unscale_latents(z) / scaling_factor)))
-        # In order to move pixel space tensor x into latent space tensor z, the inverse must be
-        # applied in the following manner:
-        #   z = scale_latents(vae_encode(scale_image(preprocess(x))) * scaling_factor)
+       
+        #3) Encode the image into the latent space 
         self.clean_front_image_latent = self.scale_latents( 
+                                                           
                         self.zero123plus.vae.encode(  #MJ: self.preprocessed_front_image_small.: (B,3,H,W)=(B,3,320,320) => (B,4,H/8, W/8) => (1,4,40,40)
-                        self.scale_image( self.preprocessed_front_image_small.half()),
-                        return_dict=False
-                        )[0].sample() * self.zero123plus.vae.config.scaling_factor
+                        self.scale_image( self.preprocessed_front_image_small.half())
+                        ).latent_dist.sample() * self.zero123plus.vae.config.scaling_factor
                 )
 
      
 
-        # MJ: Get the GT rendered images in the latent space: These will be used for blending the latent image with the gt rendered image as the background
+        # MJ: Transform the other view images in the same way the front view image is transformed
+        #  These will be used for blending the latent images generated by zero123plus 
+        # with the (latent) gt rendered image as the background
         self.rgb_render_raw_allviews = self.output_rendered_allviews['image'] #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
         
         self.rgb_render_small_allviews = F.interpolate(self.rgb_render_raw_allviews, (320, 320), mode='bilinear', align_corners=False)
@@ -312,29 +354,41 @@ class TEXTure:
         self.gt_latents_rendered_allviews = self.scale_latents(
             self.zero123plus.vae.encode(  #MJ: encode the rendered gt image: (B,3,H,W) => (B,4,H/8, W/8)
                 self.scale_image(preprocessed_rgb_render_small_allviews.half()),
-                return_dict=False
-            )[0].sample() * self.zero123plus.vae.config.scaling_factor
-        )
-        
+                ).latent_dist.sample() * self.zero123plus.vae.config.scaling_factor
+            
+        ) #MJ: self.zero123plus.vae.config.scaling_factor = 1/sigma; z * * self.zero123plus.vae.config.scaling_factor  normalizes z
+        #MJ: As shown in __call__ of Zero123PlusPipeline, latent condition (the crossattention condition) is NOT normalized during training.
+                
+                # cond_lat = self.encode_condition_image(image)
+                # def encode_condition_image(self, image: torch.Tensor):
+                # image = self.vae.encode(image).latent_dist.sample()
+                # return image
+    
+    
+        #MJ:   The latent representations of the encoded images: If `return_dict` is True, a
+        #     [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
+        #Note:  
+            # moments = self.quant_conv(h)
+            # posterior = DiagonalGaussianDistribution(moments)
 
-        #MJ: Create the mask to mark the newly visited region on the mesh => We will adjust the current latent which has been
-        # denoised one step, by blending it with the gt rendered image of the viewpoint
-        
+            # if not return_dict: #MJ: return_dict is True by default
+            #     return (posterior,)
+
+            # return AutoencoderKLOutput(latent_dist=posterior)
+
+          
         #MJ: Create the mask for blending
                 
-        #MJ:  we use the object mask, i.e., outputs['mask'], as curr_mask: => Test it: outputs['mask']  will be larger than exact_generate_mask
-        #Note that in project_back, when we compute the rendering loss of the whole mesh, we use outputs['mask'] as the mask for each view
-        #  Using outputs['mask'] makes sense when using the interveaving mode; In this mode, all the views are visited for each denoising step,
-        #After all the views are visited once, diff will greater than 0.1 and so no region will be influenced by the generated image by the pipeline
-        #But it does not makes sense. Also, using the object mask for blending means that the generated image from a view should be
-        # aligned with the rendered image from that view. So the purpose of using the mask is simplified.  In the TEXTure,
-        # the mask was used to distinguish the keep region, the generated region, and the refine region to maintain the consistency
-        # between the views. In the interveaving mode of SyncImg2Texture, the texture regions of all the views are simultaneously 
-        # generated, so we do not need to keep track, the keep, generate, refine regions. It is needed so that the texture generation in the later
-        # views does nullify the previous generation of the texture atlas. In  the interveaving mode of SyncImg2Texture, there is no notion
-        # of good previous generation of the texture; 
+        #MJ:  we use the object mask, i.e., outputs['mask'], as curr_mask:
+        #MJ: Because cropped_rgb_render_raw is rendered using the unlearned default texture atlas, 
+        # cropped_rgb_render_raw will be the same as the default texture color, and so diff will be zero.
+        # So exact_generate_mask will be the same as the object_mask, outputs['mask'].
         
-        #MJ: For testing
+    #  diff = (cropped_rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
+    #             self.device)).abs().sum(axis=1)
+    #         #MJ:  self.default_color = [0.8, 0.1, 0.8] # JA: This is the magenta color, set to the texture atlas
+    #         exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
+            
         exact_generate_mask = self.object_mask_allviews
         # Extend mask
         generate_mask = torch.from_numpy(
@@ -345,10 +399,10 @@ class TEXTure:
         self.curr_mask = F.interpolate(  #MJ: 1200x1200 => 320/8 x 320/ 8
             generate_mask,
             (320 // self.zero123plus.vae_scale_factor, 320 // self.zero123plus.vae_scale_factor),
-            mode='nearest'
+            mode='bilinear', align_corners=False
         )
 
-            
+        #MJ: The end_step call back function that post-processes the latent images being denoised     
         @torch.enable_grad
         def on_step_end(pipeline, i, t, callback_kwargs): 
             
@@ -359,6 +413,13 @@ class TEXTure:
             
             grid_latent_otherviews = callback_kwargs["latents"] #MJ: The latent image being denoised; of shape (B,4,H,W)=(1,4,120,80); 80=320*2/8
             #MJ: grid_latent refers to the current latent that is denoised one step
+            
+            #MJ: grod_latent_otherviews range over (-1,1)? 
+            #   => They range like a Normal distribution centered on the mean and spreading according to the standard deviation
+            
+            #MJ: Apply a blending operation to the latent for each view: The blending
+            # involves the blending of the generated latent image with the gt rendered image as the background
+            
             
             #MJ: convert this single tensor representing a 3x2 grid image to a tensor with 6 samples along the batch dimension
             tile_size = 320 //   pipeline.vae_scale_factor #MJ: 320/8 = 40
@@ -374,24 +435,28 @@ class TEXTure:
             #MJ: self.gt_latents_rendered_allviews;  self.clean_front_image_latent => They are in latent space
            
             noise = torch.randn_like( self.clean_front_image_latent )
-            noisy_latents_small_frontview = pipeline.scheduler.add_noise( self.clean_front_image_latent, noise, t[None]) #MJ: t (starts from 999) is used to noisify gt_latents
+            noisy_latents_frontview = pipeline.scheduler.add_noise( self.clean_front_image_latent, noise, t[None]) #MJ: t (starts from 999) is used to noisify gt_latents
             #MJ: noisy_latents_small_frontview.shape: torch.Size([1, 4, 40, 40])
             #MJ: self.gt_latents_rendered_allviews is already "noisy" being because they are in the process of being denoised; 
             # Note that they  are generated images, but not rendered ones    
-            noisy_latents_generated_allviews = torch.cat( [noisy_latents_small_frontview,  grid_latent_otherviews_batch]) 
+            noisy_latents_generated_allviews = torch.cat( [noisy_latents_frontview,  grid_latent_otherviews_batch]) 
                
             #MJ: Noisify the GT rendered image at the same noise level as the latent  in the latent space, 
-            # so that they can be blended with the noisy_latents_generated_allviews
+            # And then  blend them  with the noisy_latents_generated_allviews
                        
             if self.cfg.optim.interleaving:  
                 #MJ: In the case of interleaving, get the new GT images rendered using the texture atlas being learned
-                #MJ: self.output_rendered_allviews is newly created by rendering after project_back
+                #MJ: Render all views (including the front view)   
+                self.output_rendered_allviews = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=self.background) #MJ: Why not providing the multiple viewponits as a batch
+                #MJ: The texture atlas has been learned using the current view images (still noisy) when the project_back func was called
+                
                 self.rgb_render_raw_allviews = self.output_rendered_allviews['image'] #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
                 
                 self.rgb_render_small_allviews = F.interpolate(self.rgb_render_raw_allviews, (320, 320), mode='bilinear', align_corners=False)
 
-                preprocessed_rgb_render_small_allviews = self.zero123plus.image_processor.preprocess(self.rgb_render_small_allviews) #MJ: rgb_render_small=nan;  rgb_render_small  (320,320)  in range of [0,1] => [-1,1]; handles Pil, ndarray, Tensor image
-
+                #MJ: preprocessed_rgb_render_small_allviews = self.zero123plus.image_processor.preprocess(self.rgb_render_small_allviews) #MJ: rgb_render_small=nan;  rgb_render_small  (320,320)  in range of [0,1] => [-1,1]; handles Pil, ndarray, Tensor image
+                # => this preprocess func should not be used here, because it assumes that its input is in PIL RGB image, for example; but
+                # in our case,   self.rgb_render_small_allviews is already the normalized image in (0,1) range
                 self.gt_latents_rendered_allviews = self.scale_latents(
                     self.zero123plus.vae.encode(  #MJ: encode the rendered gt image: (B,3,H,W) => (B,4,H/8, W/8)
                         self.scale_image(preprocessed_rgb_render_small_allviews.half()),
@@ -402,41 +467,26 @@ class TEXTure:
                 # texture atlas being "denoised"/learned
                 noised_gt_latents_rendered_allviews =   self.gt_latents_rendered_allviews
                 
-            else:  #MJ: In the case of non-interleaving, self.output_rendered_allviews, which has been created outside of the caLLback_step_end
-                # will be used; the GT images that was rendered using the initial (random) texture atlas are used
-                   #MJ: In this case, the GT rendered image has the default background (white?) and the object region is random; This region will be inpainted
-                   # by the blending operation; So in this case the GT rendering has only the role of  providing the object mask for blending
+                 # This inpainting blending equation is originally from TEXTure: The blending for each viewpoint is done within the viewpoint loop
+                # Adjust the current latent which has been denoised one step, by blending it with the gt rendered image as the background
+                #MJ: noisy_latents_generated_allviews.shape: torch.Size([7, 4, 40, 40]);  self.curr_mask.shape:torch.Size([1, 1, 40, 40])
+                #MJ: noised_gt_latents_rendered_allviews is also in latent space, 40x40
                 
-            
-                #MJ:  Noisify the GT rendered image at the same noise level as the latent  in the latent space
-                noises = torch.randn_like(self.gt_latents_rendered_allviews)
-                noised_gt_latents_rendered_allviews = pipeline.scheduler.add_noise(self.gt_latents_rendered_allviews , noises, t[None]) #MJ: t is used to noisify gt_latents; g_latents = nan
-                                              
-            #End  if self.cfg.optim.interleaving
-            
-            # This inpainting blending equation is originally from TEXTure: The blending for each viewpoint is done within the viewpoint loop
-            # Adjust the current latent which has been denoised one step, by blending it with the gt rendered image as the background
-            #MJ: noisy_latents_generated_allviews.shape: torch.Size([7, 4, 40, 40]);  self.curr_mask.shape:torch.Size([1, 1, 40, 40])
-            #MJ: noised_gt_latents_rendered_allviews is also in latent space, 40x40
-            
-            blended_latents_allviews = noisy_latents_generated_allviews * self.curr_mask +  noised_gt_latents_rendered_allviews * (1 - self.curr_mask) #MJ: noised_truth is nan at the first iteration i=0, t= 999
-            
-            #MJ: Blending in batch mode: self.curr_mask is in fact the object_mask, whose edges are dilated, and compressed to the latent space of zero123plus, 320/8x320/8
-            #MJ: broadcasting: when the shapes of the tensors align from the last dimension backwards are compatible:
-            # Dimensions are compatible when:They are equal, or One of them is 1;
-            # The 1s in self.curr_mask allow it to stretch to match the corresponding dimensions in noisy_latents_generated_allviews.
-            # The result will have a shape of [7, 4, 40, 40].
-
-           
-            #MJ: PROJECT-BACK:
-            
-            #MJ: Project back the latents at the current level of noise t OR the latents finally denoised  to the texture atlas 
-            #The first option is called "interleaving"
-            if  self.cfg.optim.interleaving:  
-                # To do, we need to decode the latent to the pixel space, because the pixel space images are input to the
-                # project_back
+                blended_latents_allviews = noisy_latents_generated_allviews * self.curr_mask +  noised_gt_latents_rendered_allviews * (1 - self.curr_mask) #MJ: noised_truth is nan at the first iteration i=0, t= 999
+                
+                #MJ: Blending in batch mode: self.curr_mask is in fact the object_mask, whose edges are dilated, and compressed to the latent space of zero123plus, 320/8x320/8
+                #MJ: broadcasting: when the shapes of the tensors align from the last dimension backwards are compatible:
+                # Dimensions are compatible when:They are equal, or One of them is 1;
+                # The 1s in self.curr_mask allow it to stretch to match the corresponding dimensions in noisy_latents_generated_allviews.
+                # The result will have a shape of [7, 4, 40, 40].
+                
+                  #MJ: combine a set of view blended latent images into 3x2 form tensor to set it to   callback_kwargs["latents"]
+                tile_size = 320//self.zero123plus.vae_scale_factor
+                callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
+                
+                 
                         
-                #MJ: We will project the curruntly denoised latent, grid_image;
+                #MJ: We will project the currently denoised latent, grid_image;
                 # But before that, we need to decode it, because project_back() requires the images in the pixel space
 
                 #MJ: confer https://github.com/SUDO-AI-3D/zero123plus/blob/main/diffusers-support/pipeline.py
@@ -447,20 +497,9 @@ class TEXTure:
                 
                 unscaled_latents_allviews  = self.unscale_latents( blended_latents_allviews )
                 #In Zero123Plus, the images are also scaled for training. So, after denoising, they are unscaled
-                decoded_unscaled_image_allviews = self.unscale_image( pipeline.vae.decode(unscaled_latents_allviews.half() / pipeline.vae.config.scaling_factor, return_dict=False)[0] )
+                decoded_unscaled_image_allviews = self.unscale_image( pipeline.vae.decode( unscaled_latents_allviews.half() / pipeline.vae.config.scaling_factor, return_dict=False)[0] )
                 #MJ: Unscaling image means restoring to the original state: The scaled images are normalized ones for traning: Tensor decoded_unscaled_image ranges over [0,1] 
-                
-                
-                # Note that we do not need to use postprocess, because we do not need to produce PIL images for project-back:
-                # def postprocess(
-                #     self,
-                #     image: torch.FloatTensor,
-                #     output_type: str = "pil",
-                #     do_denormalize: Optional[List[bool]] = None,
-                # ) -> Union[PIL.Image.Image, np.ndarray, torch.FloatTensor]
-                #decoded_grid_image =  pipeline.image_processor.postprocess(unscaled_image.detach(), output_type="pil")
-                #MJ: decoded_grid_image is a tensor of shape (1,3,960,640)  
-                        
+                                                   
                 
                 #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
                 #MJ: 
@@ -477,9 +516,7 @@ class TEXTure:
                 # for v in range( noisy_rgb_outputs_full_pixelspace.shape[0]):
                 #      self.log_train_image(noisy_rgb_outputs_full_pixelspace[v:v+1], f'rgb_outputs_allviews_denoising{i}-view{v}')
 
-                #MJ: In the interleaving mode of SyncImg2Texture, call project_back here to learn the texture atlas from the view images
-                # being denoised.
-                        
+                                      
                 #MJ: project_back uses the full size image of rgb_outputs (1200x1200)
                 self.project_back_only_texture_atlas( 
                     thetas=self.thetas, phis=self.phis, radii=self.radii,                                 
@@ -493,8 +530,41 @@ class TEXTure:
                 # as the background for the inpaint blending at each denoising step:             
                 self.output_rendered_allviews = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=self.background) 
                 
-            else: #MJ: non-interleaving mode: call project_back at the end of the denoising steps
-                  #MJ: combine self.clean_front_image and the result of zero.zero123plus to create the input view images for project-back
+                return  callback_kwargs["latents"] 
+                #MJ: callback_kwargs["latents"] will be used as the input to the next denoising step through the Unet
+                    
+                                             
+                
+            else:  #MJ:  non-interleaving:  self.output_rendered_allviews, which has been created outside of the caLLback_step_end
+                # will be used; the GT images that was rendered using the initial (random) texture atlas are used
+                   #MJ: In this case, the GT rendered image has the default background (white?); The object  region will be inpainted
+                   # by the blending operation; So in this case the GT rendering has only the role of  providing the object mask for blending
+                
+            
+                #MJ:  Noisify the GT rendered image at the same noise level as the latent  in the latent space
+                noises = torch.randn_like(self.gt_latents_rendered_allviews)
+                noised_gt_latents_rendered_allviews = pipeline.scheduler.add_noise(self.gt_latents_rendered_allviews , noises, t[None]) #MJ: t is used to noisify gt_latents; g_latents = nan
+                 
+                    # Adjust the current latent which has been denoised one step, by blending it with the gt rendered image as the background
+                #MJ: noisy_latents_generated_allviews.shape: torch.Size([7, 4, 40, 40]);  self.curr_mask.shape:torch.Size([1, 1, 40, 40])
+                #MJ: noised_gt_latents_rendered_allviews is also in latent space, 40x40
+                
+                blended_latents_allviews = noisy_latents_generated_allviews * self.curr_mask +  noised_gt_latents_rendered_allviews * (1 - self.curr_mask) #MJ: noised_truth is nan at the first iteration i=0, t= 999
+                
+                #MJ: Blending in batch mode: self.curr_mask is in fact the object_mask, whose edges are dilated, and compressed to the latent space of zero123plus, 320/8x320/8
+                #MJ: broadcasting: when the shapes of the tensors align from the last dimension backwards are compatible:
+                # Dimensions are compatible when:They are equal, or One of them is 1;
+                # The 1s in self.curr_mask allow it to stretch to match the corresponding dimensions in noisy_latents_generated_allviews.
+                # The result will have a shape of [7, 4, 40, 40].
+                
+                #MJ: combine a set of view blended latent images into 3x2 form tensor to set it to   callback_kwargs["latents"]
+                tile_size = 320//self.zero123plus.vae_scale_factor
+                callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
+             
+                #MJ: callback_kwargs["latents"] will be used as the input to the next denoising step through the Unet
+                    
+                #MJ: non-interleaving mode: call project_back at the end of the denoising steps
+                #MJ: combine self.clean_front_image and the result of zero.zero123plus to create the input view images for project-back
                     
                     #noisy_rgb_outputs_full_pixelspace =  self.clean_front_image + result 
                     #But this involves coverting the PIL images of "result" to their tensor versions. 
@@ -503,48 +573,85 @@ class TEXTure:
                 if i == len(pipeline.scheduler.timesteps)-1 :   #MJ: len(pipeline.scheduler.timesteps) =36
                     
                     unscaled_latents_otherviews  = self.unscale_latents( blended_latents_allviews[1:] )
-                    #In Zero123Plus, the images are also scaled for training. So, after denoising, they are unscaled
-                    decoded_unscaled_image_otherviews = self.unscale_image( pipeline.vae.decode(unscaled_latents_otherviews.half() / pipeline.vae.config.scaling_factor, return_dict=False)[0] )
+                    #In Zero123Plus, the images are also scaled for training.
+                    decoded_image =  pipeline.vae.decode(unscaled_latents_otherviews.half() / pipeline.vae.config.scaling_factor).decoded
+                   #  after denoising, they are unscaled
+                    decoded_unscaled_image_otherviews = self.unscale_image( decoded_image )
                     #MJ: Unscaling image means restoring to the original state: The scaled images are normalized ones for traning: Tensor decoded_unscaled_image ranges over [0,1] 
-                                        
+                         
+                    postprocessed_image = pipeline.image_processor.postprocess( decoded_unscaled_image_otherviews, output_type="pil")                    
+                    
+                    grid_image_tensor = torchvision.transforms.functional.pil_to_tensor(postprocessed_image).to(self.device).float() / 255
                     #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
                     #MJ: 
-                    rgb_outputs_otherviews = F.interpolate( decoded_unscaled_image_otherviews , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
                     
-                    rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])
                     
-                     #MJ: project_back uses the full size image of rgb_outputs (1200x1200)
+                    #MJ: grid_image (tensor): shape = (3, 960,640) <= PIL size (640, 960)
+                    self.log_train_image(grid_image_tensor[None], 'zero123plus_grid_tensor_image')
+                    
+                    tile_size = 320
+                    grid_image_batch  = split_zero123plus_grid_to_components(grid_image_tensor, tile_size) 
+
+                    rgb_outputs = []
+                    for i in range(   grid_image_batch.shape[0] ):
+                        
+                        cropped_rgb_output_small =   grid_image_batch[i][None]
+
+                        # JA: Since Zero123++ requires cond tensor and each depth tensor to be of size 320x320, we resize this
+                        # to match what it used to be prior to scaling down.
+                        cropped_rgb_output = F.interpolate(
+                            cropped_rgb_output_small,
+                            (max_cropped_image_height, max_cropped_image_width),
+                            mode='bilinear',
+                            align_corners=False
+                        )
+                        
+                        min_h, min_w, max_h, max_w = utils.get_nonzero_region( self.object_mask_allviews[i][0] )             
+                                                    
+                        cropped_rgb_output = F.interpolate(
+                            cropped_rgb_output,
+                            (max_h - min_h, max_w - min_w),
+                            mode='bilinear',
+                            align_corners=False
+                        )
+
+                        # JA: We initialize rgb_output, the image where cropped_rgb_output will be "pasted into." Since the
+                        # renderer produces tensors (depth maps, object mask, etc.) with a height and width of 1200, rgb_output
+                        # is initialized with the same size so that it aligns pixel-wise with the renderer-produced tensors.
+                        # Because Zero123++ generates non-transparent images, that is, images without an alpha channel, with
+                        # a background of rgb(0.5, 0.5, 0.5), we initialize the tensor using torch.ones and multiply by 0.5.
+                        rgb_output = torch.ones(
+                            cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], 1200, 1200
+                        ).to(rgb_output.device) * 0.5
+
+                        rgb_output[:, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
+
+                        rgb_output = F.interpolate(rgb_output, (1200, 1200), mode='bilinear', align_corners=False)
+
+                        rgb_outputs.append(rgb_output)
+
+                    #End   for i in range(   grid_image_batch.shape[0] )
+                    # cf:  callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
+                    rgb_outputs_tensor = torch.cat(rgb_outputs)
+                    
+                    rgb_outputs_otherviews = F.interpolate( rgb_outputs_tensor , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
+                    
+                    rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])                                   
+                    
+                    
+                     #MJ: project_back  the full size image of rgb_outputs (1200x1200) to the texture atlas
                     self.project_back_only_texture_atlas( 
                         thetas=self.thetas, phis=self.phis, radii=self.radii,                                 
-                        render_cache=None, background=self.background, rgb_output=rgb_outputs_allviews,
+                        render_cache=None, background=self.background, rgb_output=rgb_outputs_allviews, #MJ: rgb_outputs are in [0,1]
                         object_mask=self.object_mask_allviews, update_mask=self.object_mask_allviews, z_normals=self.z_normals_allviews, 
                         z_normals_cache=None
                     )
-                  
-                
-                        
-                else:
-                    pass    
-            # #MJ: The blended_latents_allviews  except for the first one needs to be arranged to the grid_latent for the next denoising step
-            # callback_kwargs["latents"] = torch.cat((
-            #     torch.cat((blended_latents_allviews[1], blended_latents_allviews[4]), dim=3),
-            #     torch.cat((blended_latents_allviews[2], blended_latents_allviews[5]), dim=3),
-            #     torch.cat((blended_latents_allviews[3], blended_latents_allviews[6]), dim=3),
-            # ), dim=2).half()
+                #end if i == len(pipeline.scheduler.timesteps)-1 :   #MJ: len(pipeline.scheduler.timesteps) =36
+                      
+            #end else of  if self.cfg.optim.interleaving                                
+            #End  if self.cfg.optim.interleaving                            
             
-            #End if  self.cfg.optim.interleaving
-            
-            
-            
-            #MJ: combine a set of view blended latent images into 3x2 form tensor to set it to   callback_kwargs["latents"]
-            tile_size = 320//self.zero123plus.vae_scale_factor
-            callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
-             
-            #MJ: callback_kwargs["latents"] will be used as the input to the next denoising step through the Unet
-                    
-            
-            return callback_kwargs
-        
+                   
         #End  def on_step_end(pipeline, i, t, callback_kwargs)
         
         # JA: Here we call the Zero123++ pipeline
