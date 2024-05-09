@@ -26,7 +26,7 @@ from src.configs.train_config import TrainConfig
 from src.models.textured_mesh import TexturedMeshModel
 from src.stable_diffusion_depth import StableDiffusion
 from src.training.views_dataset import Zero123PlusDataset, ViewsDataset, MultiviewDataset
-from src.utils import make_path, tensor2numpy, pad_tensor_to_size, split_zero123plus_grid
+from src.utils import make_path, tensor2numpy, combine_components_to_zero123plus_grid, split_zero123plus_grid_to_components
 
 
 class TEXTure:
@@ -461,9 +461,7 @@ class TEXTure:
             torch.cat((cropped_depths_rgba[3], cropped_depths_rgba[6]), dim=3),
         ), dim=2)
 
-        self.log_train_image(cropped_front_image, 'cropped_front_image')
-        self.log_train_image(cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
-
+       
         self.log_train_image(self.cropped_front_image, 'cropped_front_image')
         self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
 
