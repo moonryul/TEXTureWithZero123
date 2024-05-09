@@ -83,9 +83,9 @@ class TEXTure:
         
         
         # Set the camera poses:
-        self.mesh_model.thetas = []
-        self.mesh_model.phis = []
-        self.mesh_model.radii = []
+        self.thetas = []
+        self.phis = []
+        self.radii = []
        
         for i, data in enumerate(self.dataloaders['train']):
             theta, phi, radius = data['theta'], data['phi'], data['radius']
