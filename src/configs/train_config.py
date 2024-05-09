@@ -98,7 +98,7 @@ class OptimConfig:
     epochs: int = 150
     interleaving: bool = False
     
-    learn_max_z_normals: bool = False
+    learn_max_z_normals: bool = True
 
 
 @dataclass

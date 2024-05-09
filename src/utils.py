@@ -177,7 +177,7 @@ def combine_components_to_zero123plus_grid(components, tile_size): #MJ: grid_ima
             start_col = col * tile_size
             end_col = start_col + tile_size
 
-            grid_image[:,:, start_row:end_row, start_col:end_col] = components[  row * 2 + col ]
+            grid_image[0,:, start_row:end_row, start_col:end_col] = components[  row * 2 + col ]  #MJ: components[  row * 2 + col ]: shape=[4,40,40]
            
             #MJ: images: col0: img0, img1, img2
             #            col1: img3, img4, img5
@@ -187,7 +187,7 @@ def combine_components_to_zero123plus_grid(components, tile_size): #MJ: grid_ima
 def split_zero123plus_grid_to_components(grid_image, tile_size): #MJ: grid_image: (1,4,120,80); tile_size of component
     num_rows = grid_image.shape[2] // tile_size
     num_cols =  grid_image.shape[3] // tile_size
-    ## Initialize components tensor to hold the tiles; dimensions [number of tiles, channels, tile_size, tile_size]
+    ## Initialize components tensor to hold the tiles; dimensions [number of tiles, channels, tile_size, tile_size]=[6,4,40,40]
     components = torch.empty( num_rows * num_cols, grid_image.shape[1], tile_size, tile_size )
     for col in range(num_cols):
         #MJ: images_col = []
