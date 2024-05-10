@@ -531,14 +531,14 @@ class TexturedMeshModel(nn.Module):
         else:
             augmented_vertices = self.mesh.vertices
 
-        if use_median:
+        if use_median: #MJ: use_media is True when self.paint_step > 1, that is, starting with the third views; The texture altas has been learned from the first two view images
             diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
                 self.device)).abs().sum(axis=1)
             default_mask = (diff < 0.1).float().unsqueeze(0)
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
-                axis=1)
+                axis=1) #MJ: compute the median color of the regions of the texture_img which are different from the default magenta color of the texture_img
             texture_img = texture_img.clone()
-            with torch.no_grad():
+            with torch.no_grad(): #MJ: update the median color of the texture image to the default color region => This updated textre_img will be used to render the mesh
                 texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
         background_type = 'none'
         use_render_back = False

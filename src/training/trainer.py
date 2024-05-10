@@ -415,14 +415,19 @@ class TEXTure:
         # front view image. #MJ: self.paint_viewpoint() is modified to return   
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background)
 
-        self.output_frontview  = self.paint_viewpoint(self.front_viewdata, should_project_back=False)
-       
-        self.rgb_output_front = self.output_frontview['image'] #MJ:  self.rgb_output_front.shape: torch.Size([1, 3, 1200, 1200])
-        self.object_mask_front =  self.output_frontview['mask']
+        #self.output_frontview  = self.paint_viewpoint(self.front_viewdata, should_project_back=False)
+        self.output_frontview  = self.paint_viewpoint(self.front_viewdata, should_project_back=True)
+        self.rgb_output_front = self.output_frontview['image'].detach() #MJ:  self.rgb_output_front.shape: torch.Size([1, 3, 1200, 1200])
+        self.object_mask_front =  self.output_frontview['mask'].detach()
         #MJ self.depth_front = self.output_frontview['depth'] #MJ: convert the depth map from sd format to zero123++ format
                 
         self.clean_front_image = self.rgb_output_front * self.object_mask_front \
                     + torch.ones_like(self.rgb_output_front, device=self.device) * (1 - self.object_mask_front)
+        
+        #MJ: self.clean_front_image which depends on the computational graph (rendering func)
+        # will be used continuously during the blending operation (after the project_back backpropagation);
+        # So, we detach it from the computational graph
+        
                     
         #MJ: crop the front view image to the object mask size
         min_h, min_w, max_h, max_w = utils.get_nonzero_region(self.object_mask_front[0, 0])
@@ -432,29 +437,43 @@ class TEXTure:
         self.cropped_front_image = crop(self.clean_front_image)
                     
         #MJ: Render all views (including the front view):  render_cache=None by default   
+        #MJ:   self.output_rendered_allviews will hold references to tensors that are part of the computational graph.contains the computational graph:
+        # Using Saved Tensors: If you've saved intermediate tensors produced during the forward pass and subsequently use them 
+        # in computations outside the training loop, you're still accessing the computational graph.
+        # Even though you're not explicitly computing gradients,
+        # these tensors are part of the graph structure and may have dependencies that affect memory management and graph retention.
         self.output_rendered_allviews = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=self.background) #MJ: Why not providing the multiple viewponits as a batch
-        
+        # self.self.output_rendered_allviews=self.output_rendered_allviews.detach()
+        #Detach the outputs of the rendering (processing the computational graph) from the computational graph
 
         # JA: In the depth controlled Zero123++ code example, the test depth map is found here:
         # https://d.skis.ltd/nrp/sample-data/0_depth.png
         # As it can be seen here, the foreground is closer to 0 (black) and background closer to 1 (white).
         # This is opposite of the SD 2.0 pipeline and the TEXTure internal renderer and must be inverted
         # (i.e. 1 minus the depth map, since the depth map is normalized to be between 0 and 1)
-        self.depth_allviews = 1 - self.output_rendered_allviews['depth']
-                         
+        self.depth_allviews = 1 - self.output_rendered_allviews['depth'].detach()
+        
+        #MJ We detach self.depth_allview for the same reason that we do for    self.clean_front_image:
+        
+        # MJ: when you do outputs = outputs.detach(), you are creating a detached version of the outputs tensor 
+        # and assigning it back to the outputs variable. This means that outputs will now refer to the detached tensor, 
+        # and any further operations involving outputs will not be part of the computational graph               
         #MJ: self.rgb_render_raw_allviews = self.output_rendered_allviews['image'] #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
         
         # JA: Get the Z component of the face normal vectors relative to the camera
-        self.z_normals_allviews = self.output_rendered_allviews['normals'][:, -1:, :, :].clamp(0, 1)  #MJ: z_normals can be computed as self.z_normals in the init method
+        self.z_normals_allviews = self.output_rendered_allviews['normals'].detach()[:, -1:, :, :].clamp(0, 1)  #MJ: z_normals can be computed as self.z_normals in the init method
         #z_normals_cache = meta_output['image'].clamp(0, 1) =>  z_normals_cache is not used
+
+        
         self.z_normals_cache = None
-        self.object_mask_allviews = self.output_rendered_allviews['mask'] # JA: mask has a shape of 1200x1200
+        self.object_mask_allviews = self.output_rendered_allviews['mask'].detach() # JA: mask has a shape of 1200x1200
+    
         
         # JA: The generated depth only has one channel, but the Zero123++ pipeline requires an RGBA image.
         # The mask is the object mask, such that the background has value of 0 and the foreground a value of 1.
         self.depth_rgba_allviews = torch.cat((self.depth_allviews, self.depth_allviews, self.depth_allviews, self.object_mask_allviews), dim=1)
         #MJ: self.depth_rgba_allviews.shape: torch.Size([7, 4, 1200, 1200])
-             
+        self.depth_rgba_allviews = self.depth_rgba_allviews.detach()     
 
         #MJ: get the cropped depth images to the object mask sizes
         max_cropped_image_height, max_cropped_image_width = 0, 0
@@ -491,9 +510,9 @@ class TEXTure:
 
        
         self.log_train_image(self.cropped_front_image, 'cropped_front_image')
-        self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
+        self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid') #MJ: self.cropped_depth_grid[:, 0:3].shape: torch.Size([1, 3, 3144, 2096])
 
-                                                                                     # This is new code. cropped_front_image is the cropped version. In control zero123 pipeline, zero123_front_input is used without padding
+        # This is new code. cropped_front_image is the cropped version. In control zero123 pipeline, zero123_front_input is used without padding
 
         # # JA: depths_rgba_allviews is a tensor that arranges the rows of the depth map, row by row
         # # These depths are not cropped versions
@@ -546,8 +565,12 @@ class TEXTure:
         # MJ: Transform the other view images in the same way as the front view image is transformed
         #  These will be used for blending the latent images generated by zero123plus 
         # with the (latent) gt rendered image as the background
-        self.rgb_render_raw_allviews = self.output_rendered_allviews['image'] #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
+        self.rgb_render_raw_allviews = self.output_rendered_allviews['image'].detach() #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
+        self.rgb_render_raw_allviews =    self.rgb_render_raw_allviews.detach()
         
+        for i in range(  self.rgb_render_raw_allviews[1:].shape[0]):
+                        self.log_train_image(  self.rgb_render_raw_allviews[i][None], 'rgb_render_raw_allviews')   
+                     
         self.rgb_render_small_allviews = F.interpolate(self.rgb_render_raw_allviews, (320, 320), mode='bilinear', align_corners=False)
 
         preprocessed_rgb_render_small_allviews = self.zero123plus.image_processor.preprocess(self.rgb_render_small_allviews) #MJ: rgb_render_small=nan;  rgb_render_small  (320,320)  in range of [0,1] => [-1,1]; handles Pil, ndarray, Tensor image
@@ -617,9 +640,9 @@ class TEXTure:
 
         #MJ: The end_step call back function that post-processes the latent images being denoised     
         @torch.enable_grad
-        def on_step_end(pipeline, i, t, callback_kwargs): 
+        def on_step_end(pipeline, iter, t, callback_kwargs): 
             
-            self.iter = i  #MJ: denoising iteration
+            self.iter = iter  #MJ: denoising iteration
             #MJ: call_back_kwargs is created if the callback func, callback_on_step_end, is defined
             # as:  compute the previous noisy sample x_t -> x_t-1
             #    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]called.
@@ -663,7 +686,7 @@ class TEXTure:
                 self.output_rendered_allviews = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=self.background) #MJ: Why not providing the multiple viewponits as a batch
                 #MJ: The texture atlas has been learned using the current view images (still noisy) when the project_back func was called
                 
-                self.rgb_render_raw_allviews = self.output_rendered_allviews['image'] #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
+                self.rgb_render_raw_allviews = self.output_rendered_allviews['image'].detach() #MJ: self.rgb_render_raw_allviews.shape:torch.Size([7, 3, 1200, 1200])
                 
                 self.rgb_render_small_allviews = F.interpolate(self.rgb_render_raw_allviews, (320, 320), mode='bilinear', align_corners=False)
 
@@ -686,7 +709,7 @@ class TEXTure:
                 #MJ: noised_gt_latents_rendered_allviews is also in latent space, 40x40
                 
                 blended_latents_allviews = noisy_latents_generated_allviews * self.curr_mask +  noised_gt_latents_rendered_allviews * (1 - self.curr_mask) #MJ: noised_truth is nan at the first iteration i=0, t= 999
-                
+
                 #MJ: Blending in batch mode: self.curr_mask is in fact the object_mask, whose edges are dilated, and compressed to the latent space of zero123plus, 320/8x320/8
                 #MJ: broadcasting: when the shapes of the tensors align from the last dimension backwards are compatible:
                 # Dimensions are compatible when:They are equal, or One of them is 1;
@@ -719,7 +742,7 @@ class TEXTure:
                 
                 grid_image_tensor = postprocessed_image
                 #MJ: grid_image (tensor): shape = (3, 960,640) <= PIL size (640, 960)
-                for i in range( blended_latents_allviews[1:].shape[0]):
+                for i in range( grid_image_tensor.shape[0]):
                     self.log_train_image(grid_image_tensor[i][None], 'zero123plus_grid_tensor_image')
                 
                 tile_size = 320
@@ -770,7 +793,7 @@ class TEXTure:
                 rgb_outputs_tensor = torch.cat(rgb_outputs)                      
                 rgb_outputs_otherviews = F.interpolate( rgb_outputs_tensor , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
                     
-                rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])    
+                noisy_rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])    
                 # JA: Create trimap of keep, refine, and generate using the render output
                 #MJ: update_masks is not used; it is the same as object_mask = outputs['mask'] #
                 # update_masks.append(viewpoint_data[i]["update_mask"])  
@@ -817,7 +840,7 @@ class TEXTure:
                 #MJ: noised_gt_latents_rendered_allviews is also in latent space, 40x40
                 
                 blended_latents_allviews = noisy_latents_generated_allviews * self.curr_mask +  noised_gt_latents_rendered_allviews * (1 - self.curr_mask) #MJ: noised_truth is nan at the first iteration i=0, t= 999
-                
+         
                 #MJ: Blending in batch mode: self.curr_mask is in fact the object_mask, whose edges are dilated, and compressed to the latent space of zero123plus, 320/8x320/8
                 #MJ: broadcasting: when the shapes of the tensors align from the last dimension backwards are compatible:
                 # Dimensions are compatible when:They are equal, or One of them is 1;
@@ -837,8 +860,8 @@ class TEXTure:
                     #But this involves coverting the PIL images of "result" to their tensor versions. 
                     # We could do this operation using ballback of zero123pipeline: https://github.com/huggingface/diffusers/blob/v0.27.2/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py#L117
                     # But doing it with callback_step_end callback when i == len(timesteps) - 1 would be just fine. We will do it.
-                if i == len(pipeline.scheduler.timesteps)-1 :   #MJ: len(pipeline.scheduler.timesteps) =36
-                    #MJ: Decode the denoised latent zero123plus grid image
+                if iter == len(pipeline.scheduler.timesteps)-1 :   #MJ: len(pipeline.scheduler.timesteps) =36
+                    #MJ: Decode the denoised latent zero123plus grid image (the other views in latent space)
                     unscaled_latents_otherviews  = self.unscale_latents( blended_latents_allviews[1:] )
                     #In Zero123Plus, the images are also scaled for training.
                     decoded_image =  pipeline.vae.decode(unscaled_latents_otherviews.half() / pipeline.vae.config.scaling_factor)[0] #MJ: or .sample
@@ -853,18 +876,19 @@ class TEXTure:
                     # #MJ: Change the shape of the decoded image ( [7,3,320,320]) to the full size (1200,1200) of the rendered image
                     # #MJ: 
                     
-                    grid_image_tensor = postprocessed_image
-                    #MJ: grid_image (tensor): shape = (3, 960,640) <= PIL size (640, 960)
-                    for i in range( blended_latents_allviews[1:].shape[0]):
+                    grid_image_tensor = postprocessed_image 
+                    #MJ:  grid_image_tensor.shape: torch.Size([6, 3, 320, 320])
+                    for i in range(grid_image_tensor.shape[0]):
                         self.log_train_image(grid_image_tensor[i][None], 'zero123plus_grid_tensor_image')
+                       
                     
-                    tile_size = 320
-                    grid_image_batch  = split_zero123plus_grid_to_components(grid_image_tensor, tile_size) 
+                    # tile_size = 320
+                    # grid_image_batch  = split_zero123plus_grid_to_components(grid_image_tensor, tile_size) 
 
                     rgb_outputs = []
-                    for i in range(   grid_image_batch.shape[0] ):
+                    for i in range(   grid_image_tensor.shape[0] ): #MJ: grid_image_tensor.shape: torch.Size([6, 3, 320, 320])
                         
-                        cropped_rgb_output_small =   grid_image_batch[i][None]
+                        cropped_rgb_output_small =   grid_image_tensor[i][None]
 
                         # JA: Since Zero123++ requires cond tensor and each depth tensor to be of size 320x320, we resize this
                         # to match what it used to be prior to scaling down.
@@ -875,7 +899,7 @@ class TEXTure:
                             align_corners=False
                         )
                         
-                        min_h, min_w, max_h, max_w = utils.get_nonzero_region( self.object_mask_allviews[i][0] )             
+                        min_h, min_w, max_h, max_w = utils.get_nonzero_region( self.object_mask_allviews[1:][i][0] )             
                                                     
                         cropped_rgb_output = F.interpolate(
                             cropped_rgb_output,
@@ -891,13 +915,13 @@ class TEXTure:
                         # a background of rgb(0.5, 0.5, 0.5), we initialize the tensor using torch.ones and multiply by 0.5.
                         rgb_output = torch.ones(
                             cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], 1200, 1200
-                        ).to(rgb_output.device) * 0.5
+                        ).to(  cropped_rgb_output.device) * 0.5
 
-                        rgb_output[:, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
+                        rgb_output[0, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
 
                         rgb_output = F.interpolate(rgb_output, (1200, 1200), mode='bilinear', align_corners=False)
 
-                        rgb_outputs.append(rgb_output)
+                        rgb_outputs.append(rgb_output)  #MJ: concat the list along dim=0, batch dim                                   
 
                     #End   for i in range(   grid_image_batch.shape[0] )
                     # cf:  callback_kwargs["latents"] = combine_components_to_zero123plus_grid(blended_latents_allviews[1:], tile_size).half()
@@ -905,19 +929,23 @@ class TEXTure:
                     
                     rgb_outputs_otherviews = F.interpolate( rgb_outputs_tensor , (1200, 1200), mode='bilinear', align_corners=False) #MJ: we can transform it as a batch mode
                     
-                    rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ])                                   
+                    rgb_outputs_allviews = torch.cat([self.clean_front_image, rgb_outputs_otherviews ]) #MJ: concat the list along dim=0, batch dim                                   
                     
                     
                      #MJ: project_back  the full size image of rgb_outputs (1200x1200) to the texture atlas
-                    self.project_back_only_texture_atlas( 
+                    project_back_return_msg = self.project_back_only_texture_atlas( 
                         thetas=self.thetas, phis=self.phis, radii=self.radii,                                 
                         render_cache=None, background=self.background, rgb_output=rgb_outputs_allviews, #MJ: rgb_outputs are in [0,1]
                         object_mask=self.object_mask_allviews, update_mask=self.object_mask_allviews, z_normals=self.z_normals_allviews, 
                         z_normals_cache=None
                     )
+                    print( project_back_return_msg)
+                    #MJ: for debugging
+                    here ="stop"
                     
                 
                 #end if i == len(pipeline.scheduler.timesteps)-1 :   #MJ: len(pipeline.scheduler.timesteps) =36
+                
                 return   callback_kwargs  #MJ: This is the latent postprocessed (blending operation is applied in our case)
                       
                 #end else of  if self.cfg.optim.interleaving                                
@@ -1045,21 +1073,19 @@ class TEXTure:
         rgb_render_raw = outputs['image']  # Render where missing values have special color
         depth_render = outputs['depth']
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
-        #MJ: The following call is not used in zero123plus version
-        #outputs = self.mesh_model.render(background=background,  #MJ: self.paint_step  refers to the viewpoint step
-        #                                 render_cache=render_cache, use_median=self.paint_step > 1, use_batch_render=False)
+        #MJ: The following call is not used in zero123plus version; MJ: use_media = False by default (that is at self.paint_step=0)
+        outputs = self.mesh_model.render(background=background,  #MJ: self.paint_step  refers to the viewpoint step
+                                         render_cache=render_cache, use_median=self.paint_step > 1, use_batch_render=False)
         rgb_render = outputs['image']
         # Render meta texture map
-        #MJ: meta_texture output is not used in zero123plus version
-        # meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
-        #                                      use_meta_texture=True, render_cache=render_cache, use_batch_render=False)
+        
+        meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+                                              use_meta_texture=True, render_cache=render_cache, use_batch_render=False)
 
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
-        #MJ: z_normals_cache = meta_output['image'].clamp(0, 1)
-        #MJ: edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
-        z_normals_cache = None  #MJ: added by MJ
-        edited_mask = None
-
+        z_normals_cache = meta_output['image'].clamp(0, 1)
+        edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
+        
         self.log_train_image(rgb_render, 'rgb_render')
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
@@ -1431,10 +1457,14 @@ class TEXTure:
     def project_back_only_texture_atlas(self,  thetas: List[float], phis: List[float], radii: List[float], 
                                         render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
-                     z_normals_cache: torch.Tensor,
-                     view_weights
+                     z_normals_cache: torch.Tensor
                      ):
+        
+        optimizer = torch.optim.Adam(self.mesh_model.get_params_texture_atlas(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
+                                     eps=1e-15)
+            
         eroded_masks = []
+        
         for i in range(object_mask.shape[0]):  # Iterate over the batch dimension
             eroded_mask = cv2.erode(object_mask[i, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))
             eroded_masks.append(torch.from_numpy(eroded_mask).to(self.device).unsqueeze(0).unsqueeze(0))
@@ -1469,9 +1499,7 @@ class TEXTure:
             for i in range(rgb_output.shape[0]):
                 self.log_train_image(rgb_output[i][None] * render_update_mask[i][None], f'project_back_input_{i}')
                  
-        optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
-                                     eps=1e-15)
-            
+       
         # JA: Create the texture atlas for the mesh using each view. It updates the parameters
         # of the neural network and the parameters are the pixel values of the texture atlas.
         # The loss function of the neural network is the render loss. The loss is the difference
@@ -1483,32 +1511,55 @@ class TEXTure:
         else:
           weight_of_curr_project_back = 1
                
-        with tqdm( range(self.cfg.optim.epochs * weight_of_curr_project_back),desc='fitting mesh colors') as pbar: #MJ: epochs = 150
-    
-        
-
-          for _ in pbar:
-            optimizer.zero_grad()
+        with tqdm( range(self.cfg.optim.epochs * weight_of_curr_project_back),desc='Project_back:fitting mesh colors') as pbar: #MJ: epochs = 150
+           
+          for i in pbar:
+            optimizer.zero_grad() 
+            # Calling optimizer.zero_grad() resets the gradients of all optimized parameters to zero
+            # before the backward pass, effectively preparing them for the next iteration of optimization. 
+            # This step is crucial to ensure that gradients from previous iterations do not accumulate 
+            # and affect the current iteration's update.
+            
+           
+            #MJ: self.mesh_model.render that produces outputs is the computational graph, that is, the network model
             outputs = self.mesh_model.render(theta=thetas, phi=phis, radius=radii, background=background,
-                                            render_cache=render_cache) #MJ: render the mesh using the texture atlas being learned within this epoch loop
+                                            render_cache=render_cache)   #MJ: In my experiment, render_cache = None
+            #MJ: render the mesh using the texture atlas being learned within this epoch loop
             rgb_render = outputs['image']
 
             # loss = (render_update_mask * (rgb_render - rgb_output.detach()).pow(2)).mean()
             loss = (render_update_mask * self.view_weights * (rgb_render - rgb_output.detach()).pow(2)).mean()
+            
+            if self.cfg.optim.interleaving:
+                    pbar.set_description(f"Project-back: Fitting mesh colors -At Iter ={self.iter}, Epoch {i + 1}, Loss: {loss.item():.4f}")
+            else:
+                    pbar.set_description(f"Project-back: Fitting mesh colors -Epoch {i + 1}, Loss: {loss.item():.4f}")
+            
+            
             #MJ: rgb)output is the result of blending the generated latent image with the gt rendered image; It contains the computation tree
             # used to render the image; This tree contains the learnable parameters. To make these not affected during training, we detach rgb_output.
-            loss.backward() # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
-                            # the network, that is, the pixel value of the texture atlas
+            loss.backward(retain_graph=True) #MJ: The computational graph is used outside the training loop by the render function output; so retain the graph
+            # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
+            # the network, that is, the pixel value of the texture atlas
+            
+            # Trying to backward through the graph a second time (or directly access saved tensors 
+            # after they have already been freed) causes an error. Saved intermediate values of the graph
+            # are freed when you call .backward() or autograd.grad(). Specify retain_graph=True 
+            # if you need to backward through the graph a second time or if you need to access saved tensors 
+            # after calling backward.
+                      
             optimizer.step()
             
-            #MJ:  Update the description of the progress bar with current loss
-            if self.cfg.optim.interleaving:
-                    pbar.set_description(f"Fitting mesh colors -At Iter ={self.iter}, Epoch {_ + 1}, Loss: {loss.item():.4f}")
-            else:
-                    pbar.set_description(f"Fitting mesh colors -Epoch {_ + 1}, Loss: {loss.item():.4f}")
-         #End  for _ in pbar
+            #MJ:  Update the description of the progress bar with current loss:
+            #MJ: The following code performs tensor accesses after the first backward pass, which could lead to the error.
+            # if self.cfg.optim.interleaving:
+            #         pbar.set_description(f"Project-back: Fitting mesh colors -At Iter ={self.iter}, Epoch {_ + 1}, Loss: {loss.item():.4f}")
+            # else:
+            #         pbar.set_description(f"Project-back: Fitting mesh colors -Epoch {_ + 1}, Loss: {loss.item():.4f}")
+          #End  for _ in pbar
+          here = "stop"  #MJ: I am returning to the callback_step_end func for the last time
         #End    with tqdm( range(self.cfg.optim.epochs * weight_of_curr_project_back),desc='fitting mesh colors') as pbar
-                
+        return "project_back_texture_atlas"     
         #MJ: return rgb_render
 
     def project_back_max_z_normals(self):

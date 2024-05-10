@@ -199,8 +199,8 @@ def split_zero123plus_grid_to_components(grid_image, tile_size): #MJ: grid_image
             end_col = start_col + tile_size
 
            # Assign the tiled grid image to the corresponding position in components
-            idx = row * num_cols + col
-            components[ idx ] = grid_image[:,:, start_row:end_row, start_col:end_col]
+            idx = row * num_cols + col #MJ:     components[ idx ].shape:torch.Size([4, 40, 40])
+            components[ idx ] = grid_image[0,:, start_row:end_row, start_col:end_col]
            
             #MJ: images: col0: img0, img1, img2
             #            col1: img3, img4, img5
