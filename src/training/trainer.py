@@ -28,6 +28,8 @@ from src.stable_diffusion_depth import StableDiffusion
 from src.training.views_dataset import Zero123PlusDataset, ViewsDataset, MultiviewDataset
 from src.utils import make_path, tensor2numpy, pad_tensor_to_size, split_zero123plus_grid
 
+import time
+
 # JA: scale_latents, unscale_latents, scale_image, and unscale_image are from the Zero123++ pipeline code:
 # https://huggingface.co/sudo-ai/zero123plus-pipeline/blob/main/pipeline.py
 def scale_latents(latents):
@@ -374,7 +376,15 @@ class TEXTure:
                 # JA: The first viewpoint should always be frontal. It creates the extended version of the cropped
                 # front view image.
                 #MJ: for debugging:   rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
+                
+                front_view_start_time = time.perf_counter()  # Record the start time
                 rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
+                
+                front_view_end_time = time.perf_counter()  # Record the end time
+                front_view_elapsed_time = front_view_end_time - front_view_start_time  # Calculate elapsed time
+
+                print(f"Elapsed time: {front_view_elapsed_time} seconds")
+
                 # JA: The object mask is multiplied by the output to erase any generated part of the image that
                 # "leaks" outside the boundary of the mesh from the front viewpoint. This operation turns the
                 # background black, but we would like to use a white background, which is why we set the inverse 
@@ -617,25 +627,43 @@ class TEXTure:
                                                     use_meta_texture=True, render_cache=None)
             z_normals = meta_outputs["normals"][:,2:3,:,:].clamp(0, 1)
             max_z_normals = meta_outputs['image'][:,0:1,:,:].clamp(0, 1) 
-            self.view_weights = self.compute_view_weights(z_normals, max_z_normals, alpha=self.cfg.optim.alpha) #MJ: = -50 , -100, -10000
-            #MJ: try to vary alpha from -1 to -10: If alpha approaches -10, the face_idx whose z_normals are greater have more weights
+            
+            self.view_weights = self.compute_view_weights(z_normals, max_z_normals, alpha=self.cfg.optim.alpha) #MJ: = -50 , -100, -1000
+            self.view_masks_0_1 = torch.abs(z_normals - max_z_normals) < 0.1
+            self.view_masks_0_01 = torch.abs(z_normals - max_z_normals) < 0.01
+            self.view_masks_0_001 = torch.abs(z_normals - max_z_normals) < 0.001            #MJ: try to vary alpha from -1 to -10: If alpha approaches -10, the face_idx whose z_normals are greater have more weights
     
+           
+                               
             #MJ: for debugging:
             max_z_normals_red =  meta_outputs['image'][:,:,:,:].clamp(0, 1)       
             for i in range( len(self.thetas) ):
                
                 self.log_train_image(
                     torch.cat((z_normals[i][None], z_normals[i][None], z_normals[i][None]), dim=1),
-                    f'debug:z_normals_{i}'
+                    f'z_normals_{i}'
                 )
                 self.log_train_image( torch.cat( (max_z_normals[i][None], max_z_normals[i][None],
-                                                   max_z_normals[i][None]), dim=1), f'debug:max_z_normals_gray_{i}' )
+                                                   max_z_normals[i][None]), dim=1), f'max_z_normals_gray_{i}' )
                 
-                self.log_train_image( max_z_normals_red[i][None], f'debug:max_z_normals_red_{i}' )
+                self.log_train_image( max_z_normals_red[i][None], f'max_z_normals_red_{i}' )
                 
                 self.log_train_image( torch.cat( (self.view_weights[i][None], self.view_weights[i][None], self.view_weights[i][None]), dim=1),
-                                      f'debug:view_weights_{i}' )  #MJ: view_weights: (B,1,H,W)
-          
+                                      f'view_weights_{i}' )  #MJ: view_weights: (B,1,H,W)
+                
+                  
+                self.log_train_image( torch.cat( (self.view_masks_0_1[i][None], self.view_masks_0_1[i][None],
+                                                  self.view_masks_0_1[i][None]), dim=1),
+                                                    f'view_masks{i}_0_1' )  #MJ: view_weights: (B,1,H,W)  
+                self.log_train_image( torch.cat( (self.view_masks_0_01[i][None], self.view_masks_0_01[i][None], 
+                                                  self.view_masks_0_01[i][None]), dim=1),
+                                        f'view_masks{i}_0_01' )  #MJ: view_weights: (B,1,H,W)  
+                self.log_train_image( torch.cat( (self.view_masks_0_001[i][None], self.view_masks_0_001[i][None],
+                                                  self.view_masks_0_001[i][None]), dim=1),
+                                        f'view_masks{i}_0_001' )  #MJ: view_weights: (B,1,H,W)  
+                
+                # self.log_train_image( torch.cat( (self.view_masks[i][None], self.view_masks[i][None], self.view_masks[i][None]), dim=1),
+                #                        f'debug:view_masks_{i}' )  #MJ: view_weights: (B,1,H,W)  
         #End if self.cfg.optim.learn_max_z_normals
             
             
@@ -1484,6 +1512,52 @@ class TEXTure:
         # Normalize to have the desired shape (B, 1, H, W)
         #weights = weights.view(weights.size(0), 1, weights.size(1), weights.size(2))
         
+        #MJ: Apply the blurred mask to the view_weights:          
+                
+        meta_output = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii,
+                                            background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                    use_meta_texture=True, render_cache=None)          
+    
+        #MJ: z_normals is the z component of the normal vectors of the faces seen by each view
+        object_mask = meta_output['mask']   #MJ: shape = (1,1,1200,1200)
+        
+        #MJ: Try blurring the object-mask "curr_z_mask" with Gaussian blurring: The following code is a simply
+        # cut and paste from project-back:
+     
+        eroded_masks = []
+        for i in range(object_mask.shape[0]):  # Iterate over the batch dimension
+            eroded_mask = cv2.erode(object_mask[i, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))
+            eroded_masks.append(torch.from_numpy(eroded_mask).to(self.device).unsqueeze(0).unsqueeze(0))
+
+        # Convert the list of tensors to a single tensor
+        eroded_object_mask = torch.cat(eroded_masks, dim=0)
+        # object_mask = torch.from_numpy(
+        #     cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
+        #     object_mask.device).unsqueeze(0).unsqueeze(0)
+        # render_update_mask = object_mask.clone()
+        render_update_mask = eroded_object_mask.clone()
+
+        # blurred_render_update_mask = torch.from_numpy(
+        #     cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
+        #     render_update_mask.device).unsqueeze(0).unsqueeze(0)
+        dilated_masks = []
+        for i in range(object_mask.shape[0]):  # Iterate over the batch dimension
+            dilated_mask = cv2.dilate(render_update_mask[i, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))
+            dilated_masks.append(torch.from_numpy(dilated_mask).to(self.device).unsqueeze(0).unsqueeze(0))
+
+        # Convert the list of tensors to a single tensor
+        blurred_render_update_mask = torch.cat(dilated_masks, dim=0)
+        blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
+
+        # Do not get out of the object
+        blurred_render_update_mask[object_mask == 0] = 0
+        
+        white_background = torch.ones_like(weights)
+        #MJ: Make the background of weights white for the purpose drawing the weights so that 
+        # the dark areas around the edge of the object would not be confused with the background
+        weights  = blurred_render_update_mask *  weights + white_background + (1-blurred_render_update_mask)
+        
+        #MJ: apply the Gaussian blurring masks to view-weights 
         return weights
        
     
