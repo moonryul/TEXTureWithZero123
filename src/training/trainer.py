@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import Any, Dict, Union, List
 
@@ -83,6 +84,9 @@ class TEXTure:
         
         # Set the camera poses:
         
+          
+        # Set the camera poses:
+        
         
         # Set the camera poses:
         self.thetas = []
@@ -152,6 +156,8 @@ class TEXTure:
             pass
         
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
+
+      
 
     def create_face_view_map(self, face_idx):
         num_views, _, H, W = face_idx.shape  # Assume face_idx shape is (B, 1, H, W)
@@ -379,12 +385,6 @@ class TEXTure:
                 
                 front_view_start_time = time.perf_counter()  # Record the start time
                 rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
-                
-                front_view_end_time = time.perf_counter()  # Record the end time
-                front_view_elapsed_time = front_view_end_time - front_view_start_time  # Calculate elapsed time
-
-                print(f"Elapsed time: {front_view_elapsed_time} seconds")
-
                 # JA: The object mask is multiplied by the output to erase any generated part of the image that
                 # "leaks" outside the boundary of the mesh from the front viewpoint. This operation turns the
                 # background black, but we would like to use a white background, which is why we set the inverse 
@@ -765,7 +765,7 @@ class TEXTure:
         self.project_back_only_texture_atlas(
              render_cache=render_cache, background=background, rgb_output=torch.cat(rgb_outputs),
             object_mask=object_mask, update_mask=object_mask, z_normals=z_normals, z_normals_cache=z_normals_cache
-            #,  weight_masks=self.weight_masks
+            
         )
         
         
@@ -1257,7 +1257,7 @@ class TEXTure:
             
     def project_back_only_texture_atlas(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
-                      z_normals_cache: torch.Tensor #, weight_masks: torch.Tensor                   
+                      z_normals_cache: torch.Tensor                   
                      ):
         eroded_masks = []
         for i in range(object_mask.shape[0]):  # Iterate over the batch dimension
@@ -1320,7 +1320,7 @@ class TEXTure:
                 #2) use weight-masks based on z_normals
                 # weight_masks = self.compute_view_weights( z_normals )
                 #3) use weight-masks as best_z_normals
-            
+                
                 #MJ: loss = (render_update_mask * weight_masks * (rgb_render - rgb_output.detach()).pow(2)).mean()
                 loss = (render_update_mask * self.view_weights * (rgb_render - rgb_output.detach()).pow(2)).mean()
                 loss.backward(retain_graph=True) # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
