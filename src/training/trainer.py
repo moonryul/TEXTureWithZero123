@@ -391,16 +391,19 @@ class TEXTure:
             start_time = time.perf_counter()  # Record the start time
             
             self.paint_zero123plus()
+            
             end_time = time.perf_counter()  # Record the end time
             total_elapsed_time = end_time - start_time  # Calculate elapsed time
 
-            print(f"Total Elapsed time: {total_elapsed_time:.4f} seconds")
+            print(f"self.paint_zero123plus(): Total Elapsed time: {total_elapsed_time:.4f} seconds")
 
         else:
             self.paint_legacy()
 
     def paint_zero123plus(self):
         logger.info('Starting training ^_^')
+        
+        zero_prep_start_time = time.perf_counter()  # Record the start time
         # Evaluate the initialization: Currently self.texture_img and self.meta_texture_img are not learned at all;
         #MJ:  Because we are not learning the textures sequentially scanning over the viewpoints, this evaluation is meaningless
         #MJ: self.evaluate(self.dataloaders['val'], self.eval_renders_path)
@@ -544,8 +547,15 @@ class TEXTure:
         cond_image = torchvision.transforms.functional.to_pil_image(cropped_front_image[0]).resize((320, 320))
         depth_image = torchvision.transforms.functional.to_pil_image(cropped_depth_grid[0]).resize((640, 960))
 
+        zero_prep_end_time = time.perf_counter()  
+        elapsed_time =  zero_prep_end_time -  zero_prep_start_time
+        print(f'zero_prep_time={elapsed_time:0.4f}')
+        
         @torch.enable_grad
         def on_step_end(pipeline, i, t, callback_kwargs):
+            
+            on_step_end_start_time = time.perf_counter()
+           
             grid_latent = callback_kwargs["latents"]
 
             latents = split_zero123plus_grid(grid_latent, 320 // pipeline.vae_scale_factor)
@@ -653,11 +663,16 @@ class TEXTure:
                 torch.cat((blended_latents[1], blended_latents[4]), dim=3),
                 torch.cat((blended_latents[2], blended_latents[5]), dim=3),
             ), dim=2).half()
-
+            
+            on_step_end_end_time = time.perf_counter()
+            elapsed_time = on_step_end_end_time - on_step_end_start_time
+            print(f'on_step_end time={elapsed_time:0.4f}')
+            
             return callback_kwargs
 
         # JA: Here we call the Zero123++ pipeline
-
+        
+        zero123_sample_start_time = time.perf_counter()  
         result = self.zero123plus(
             cond_image,
             depth_image=depth_image,
@@ -665,9 +680,14 @@ class TEXTure:
             callback_on_step_end=on_step_end
         ).images[0]
 
+        zero123_sample_end_time = time.perf_counter()  
+        elapsed_time = zero123_sample_end_time -  zero123_sample_start_time
+        print(f'zero123_sample_time={elapsed_time:0.4f}')
+        
       #MJ: Now that the images for the 7 views are generated, project back them to construct the texture atlas
       
-            
+        project_back_prep_start_time = time.perf_counter()    
+         
         grid_image = torchvision.transforms.functional.pil_to_tensor(result).to(self.device).float() / 255
 
         self.log_train_image(grid_image[None], 'zero123plus_grid_image')
@@ -762,6 +782,13 @@ class TEXTure:
         z_normals_cache = meta_output['image'].clamp(0, 1)
         object_mask = outputs['mask'] # JA: mask has a shape of 1200x1200
 
+
+        project_back_prep_end_time = time.perf_counter()
+        elapsed_time = project_back_prep_end_time - project_back_prep_start_time
+        print(f' project_back_prep  time={elapsed_time:0.4f}') 
+        
+        
+        project_back_start_time =  time.perf_counter()   
         #MJ:  self.project_back_only_texture_atlas:
         self.project_back_only_texture_atlas(
              render_cache=render_cache, background=background, rgb_output=torch.cat(rgb_outputs),
@@ -769,6 +796,10 @@ class TEXTure:
             
         )
         
+        project_back_end_time = time.perf_counter()     
+        
+        elapsed_time = project_back_end_time - project_back_start_time
+        print(f' project_back time={elapsed_time:0.4f}')
         
         
         self.mesh_model.change_default_to_median()
@@ -777,7 +808,16 @@ class TEXTure:
         
         #MJ: Render the mesh using the learned texture atlas from a lot of regularly sampled viewpoints
         # and create a video from the rendered image sequence and 
+        
+        eval_start_time = time.perf_counter()     
+        
         self.full_eval() 
+        
+          
+        eval_end_time = time.perf_counter()
+        
+        elapsed_time = eval_end_time - eval_start_time
+        print(f' eval time={elapsed_time:0.4f}')
         logger.info('\t All Done!')
 
     def paint_legacy(self):
