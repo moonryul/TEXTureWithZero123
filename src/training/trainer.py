@@ -560,7 +560,7 @@ class TEXTure:
                 phi = float(phi + 2 * np.pi if phi < 0 else phi)
 
                 outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background)
-
+                #MJ: You do not need to render the mesh repeatedly unless the texture map is changed.
                 phi = float(phi + 2 * np.pi if phi < 0 else phi)
 
                 min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs['mask'][0, 0])
