@@ -400,7 +400,7 @@ class TEXTure:
         else:
             self.paint_legacy()
 
-    def paint_zero123plus(self):
+    def paint_zero123plus(self):#MJ:
         logger.info('Starting training ^_^')
         
         zero_prep_start_time = time.perf_counter()  # Record the start time
@@ -427,6 +427,10 @@ class TEXTure:
                 
                 front_view_start_time = time.perf_counter()  # Record the start time
                 rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
+                #MJ: Within this call, the re-rendering of the mesh with use-median = True is called so that the 
+                # default region of the texture map is set to the median color of the learned part. But this call 
+                # is only for the front viewpoint; But at this  time the texture map is not yet learned, and is the same as
+                # the default (magenta color) texture map, because project-back is not yet called for the front view 
                 
                 front_view_end_time = time.perf_counter()  # Record the end time
                 front_view_elapsed_time = front_view_end_time - front_view_start_time  # Calculate elapsed time
@@ -442,7 +446,8 @@ class TEXTure:
                 front_image = rgb_output_front * object_mask_front \
                     + torch.ones_like(rgb_output_front, device=self.device) * (1 - object_mask_front)
 
-  
+            #End  if i == 0
+            
             # JA: Even though the legacy function calls self.mesh_model.render for a similar purpose as for what
             # we do below, we still do the rendering again for the front viewpoint outside of the function for
             # the sake of brevity.
@@ -457,6 +462,7 @@ class TEXTure:
                                                                     # azimuth offset
             phi = float(phi + 2 * np.pi if phi < 0 else phi) # JA: We convert negative phi angles to positive
 
+           #Render the other views: 
             outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background)
             render_cache = outputs['render_cache'] # JA: All the render outputs have the shape of (1200, 1200)
 
@@ -465,8 +471,13 @@ class TEXTure:
                 render_cache=render_cache,
                 use_median=True
             )
+            #MJ: But at this  time the texture map is  learned from the front view image by the call of
+            #  rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
+            #So, the re-rendering of the mesh with use-median = True is called so that the 
+            # default region of the texture map is set to the median color of the texture map 
+            # learned from the front view image.
 
-            min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs["mask"][0, 0]) #MJ: (1,1,H,W)
+            min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs["mask"][0, 0]) #MJ: outputs["mask"][0, 0]: shape (1,1,H,W)
             crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
             cropped_update_mask = crop(outputs["mask"])
 
@@ -527,7 +538,7 @@ class TEXTure:
                 )
 
         # JA: cropped_depths_rgba is a list that arranges the rows of the depth map, row by row
-        cropped_depth_grid = torch.cat((
+        cropped_depth_grid = torch.cat((  #MJ: cropped_depths_rgba[1] is a tensor of shape (1,4,937,937)
             torch.cat((cropped_depths_rgba[1], cropped_depths_rgba[4]), dim=3),
             torch.cat((cropped_depths_rgba[2], cropped_depths_rgba[5]), dim=3),
             torch.cat((cropped_depths_rgba[3], cropped_depths_rgba[6]), dim=3),
@@ -552,7 +563,7 @@ class TEXTure:
         print(f'zero_prep_time={elapsed_time:0.4f}')
         
         @torch.enable_grad
-        def on_step_end(pipeline, i, t, callback_kwargs):
+        def on_step_end(pipeline, iter, t, callback_kwargs):
             
             on_step_end_start_time = time.perf_counter()
            
@@ -586,11 +597,14 @@ class TEXTure:
                 else:
                     cropped_rgb_render_raw = crop(outputs['image'])
 
-                render_cache = outputs['render_cache']
+                render_cache = outputs['render_cache'] 
+                #MJ: render_cache stores the info about the rasterization of  the previous render; Using the same render_cache results in the same
+                # rendered image
                 outputs = self.mesh_model.render(
                     background=torch.Tensor([0.5, 0.5, 0.5]).to(self.device),
                     render_cache=render_cache,
-                    use_median=True
+                    use_median=True #MJ: Now the texture map, self.texture_img,  has been learned from the 
+                    #  front view image by the previous calls of the render for all
                 )
 
                 if should_pad:
@@ -603,6 +617,8 @@ class TEXTure:
                 else:
                     cropped_rgb_render = crop(outputs['image'])
 
+                self.log_train_image(cropped_rgb_render, f'v={viewpoint_index}: cropped_rgb_render')   
+           
                 image_row_index = (viewpoint_index - 1) % 3
                 image_col_index = (viewpoint_index - 1) // 3
 
@@ -623,6 +639,8 @@ class TEXTure:
                     mode='nearest'
                 )
 
+               #MJ: self.log_train_image( torch.cat( [curr_mask,curr_mask,curr_mask], dim=1),  f'step={iter}:v={viewpoint_index}:curr_mask') 
+               
                 cropped_rgb_render_small = F.interpolate(
                     cropped_rgb_render,
                     (320, 320),
@@ -653,7 +671,10 @@ class TEXTure:
 
                 # JA: latent will be unscaled after generation. To make noised_truth unscaled as well, we scale them.
                 # This blending equation is originally from TEXTure
-                blended_latent = latent * curr_mask + noised_truth * (1 - curr_mask) 
+                blended_latent = latent * curr_mask + noised_truth * (1 - curr_mask)                 
+                             
+                 #MJ: for debugging, skip the blending to test if the zero123++ generates images correctly            
+                #blended_latent = latent
 
                 blended_latents.append(blended_latent)
             #End  for viewpoint_index, data in enumerate(self.dataloaders['train'])
@@ -668,6 +689,59 @@ class TEXTure:
             elapsed_time = on_step_end_end_time - on_step_end_start_time
             print(f'on_step_end time={elapsed_time:0.4f}')
             
+            
+            # #MJ: For debugging, save   grid_latent, the latent being denoised at the current step i
+            # # x = postprocess(unscale_image(vae_decode(unscale_latents(z) / scaling_factor)))
+             
+            # unscaled_latent = unscale_latents(grid_latent)  #MJ: grid_latent = callback_kwargs["latents"]
+            # scaled_image =  pipeline.vae.decode(
+            #      unscaled_latent/pipeline.vae.config.scaling_factor,
+            #     return_dict=False
+            #  )[0]  
+            # unscaled_image = unscale_image(scaled_image)
+            # #scaled_image.requires_grad = False #MJ: somehow pipeline.vae.decode converts the tensor to the tensor with requires_grad= True
+            # #MJ: you can only change requires_grad flags of leaf variables. 
+            # # If you want to use a computed variable in a subgraph that doesn't require differentiation 
+            # # use var_no_grad = var.detach().
+            # unscaled_image_no_grad =  unscaled_image.detach()
+            
+            # do_denormalize = [True] * unscaled_image_no_grad.shape[0]
+            # postprocessed_image =  pipeline.image_processor.postprocess(unscaled_image_no_grad, output_type='pil',  do_denormalize=do_denormalize) #.postprocess does not like it
+            # #Normalize an image array to [-1,1]. => denormalize into [0,1]
+            # # Now, let's save this image
+            # postprocessed_image[0].save(self.train_renders_path/f'step={iter}:decoded_latent_image_in_PIL.jpg')
+           
+            # #MJ: unscaled_image has not been de-normalized into (0,1) by the function which returns it; The de-normalization is performed
+            # #at the end of the denoising.
+            # decoded_image = pipeline.image_processor.denormalize(unscaled_image_no_grad[0])
+            # self.log_train_image( decoded_image[None], f'step={iter}: decoded latent imag in tensor')   #scaled_image.max(); 7.5703; scaled_image.min(): -7.8477; 
+             
+            
+            #  #  scaled_image.min(); -12.5547; unscaled_image.max(): 12.1094; unscaled_image.shape: [1, 3, 960, 640]
+             
+             
+            # if iter > 30:
+            #     print(f'at iter={iter}:decoded_image.max(), uncoded_image.min() = {decoded_image.max()}, {decoded_image.min()}')
+            #     # Check which pixel values fall within the range (0, 1)
+            #     valid_pixel_mask = (  decoded_image >=0) & (  decoded_image <= 1)
+
+            #     # Calculate the percentage of valid pixels
+            #     percentage_valid_pixels = torch.mean(valid_pixel_mask.float()) * 100  # Convert to percentage
+
+            #     print(f"Percentage of pixel values within (0, 1): {percentage_valid_pixels.item():.2f}%")
+                
+            #     import matplotlib.pyplot as plt
+
+            #     # Plot a histogram of the pixel values
+            #     plt.hist(decoded_image.view(-1).cpu().numpy(), bins=100, range=(0,1))
+            #     plt.title('Pixel Value Distribution')
+            #     plt.xlabel('Pixel Values')
+            #     plt.ylabel('Frequency')
+            #     plt.show()
+          
+            #  #scaled_image.max(); 7.5703; scaled_image.min(): -7.8477; 
+            #  #  scaled_image.min(); -12.5547; unscaled_image.max(): 12.1094; unscaled_image.shape: [1, 3, 960, 640]
+            
             return callback_kwargs
 
         # JA: Here we call the Zero123++ pipeline
@@ -676,7 +750,7 @@ class TEXTure:
         result = self.zero123plus(
             cond_image,
             depth_image=depth_image,
-            num_inference_steps=36,
+            num_inference_steps=80, #36,
             callback_on_step_end=on_step_end
         ).images[0]
 

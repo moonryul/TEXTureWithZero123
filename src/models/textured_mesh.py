@@ -610,7 +610,11 @@ class TexturedMeshModel(nn.Module):
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
                 axis=1)
             texture_img = texture_img.clone()
-            with torch.no_grad():
+            #Why  with torch.no_grad(): Direct Assignment Is Not Differentiable: The operation of directly assigning values to 
+            # certain elements of texture_img does not involve a differentiable operation 
+            # that PyTorch can compute gradients for. In other words, gradient computation mechanisms 
+            # do not have a way to "backtrack" through an in-place assignment operation.
+            with torch.no_grad(): #MJ: a direct update of the network parameters, self.texture_img: not via project-back
                 texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
         background_type = 'none'
         use_render_back = False
