@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import Any, Dict, Union, List
 
@@ -15,7 +16,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-#MJ: commented out for debugging: from torch_scatter import scatter_max
+from torch_scatter import scatter_max
 
 import torchvision
 from PIL import Image
@@ -28,6 +29,27 @@ from src.stable_diffusion_depth import StableDiffusion
 from src.training.views_dataset import Zero123PlusDataset, ViewsDataset, MultiviewDataset
 from src.utils import make_path, tensor2numpy, combine_components_to_zero123plus_grid, split_zero123plus_grid_to_components
 
+<<<<<<< HEAD
+=======
+from PIL import Image, ImageDraw
+# JA: scale_latents, unscale_latents, scale_image, and unscale_image are from the Zero123++ pipeline code:
+# https://huggingface.co/sudo-ai/zero123plus-pipeline/blob/main/pipeline.py
+def scale_latents(latents):
+    latents = (latents - 0.22) * 0.75
+    return latents
+
+def unscale_latents(latents):
+    latents = latents / 0.75 + 0.22
+    return latents
+
+def scale_image(image):
+    image = image * 0.5 / 0.8
+    return image
+
+def unscale_image(image):
+    image = image / 0.5 * 0.8
+    return image
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
 class TEXTure:
     def __init__(self, cfg: TrainConfig):
@@ -62,8 +84,6 @@ class TEXTure:
 
         self.zero123_front_input = None
         
-        # Set the camera poses:
-        
         
         # Set the camera poses:
         self.thetas = []
@@ -78,6 +98,7 @@ class TEXTure:
             self.thetas.append(theta)
             self.phis.append(phi)
             self.radii.append(radius)
+<<<<<<< HEAD
             
         #MJ: check if we use project_back_max_z_normals to learn the max_z_normals texture map   
         if self.cfg.optim.learn_max_z_normals:
@@ -96,6 +117,15 @@ class TEXTure:
             
         else:
                 
+=======
+
+        #MJ: check if we use project_back_max_z_normals to learn the max_z_normals texture map  
+        # JA: It computes the self.meta_texture_img which contains the best z normals of the pixel
+         # images
+        #MJ: self.project_back_max_z_normals() 
+        if not self.cfg.optim.learn_max_z_normals: #MJ: when you do not use learn_max_z_normals
+          
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
             augmented_vertices = self.mesh_model.mesh.vertices
 
             batch_size = len(self.dataloaders['train'])
@@ -106,13 +136,22 @@ class TEXTure:
                 augmented_vertices[None].repeat(batch_size, 1, 1),
                 self.mesh_model.mesh.faces, # JA: the faces tensor can be shared across the batch and does not require its own batch dimension.
                 self.mesh_model.face_attributes.repeat(batch_size, 1, 1, 1),
+<<<<<<< HEAD
                 elev=torch.tensor(self.thetas).to(self.device),
                 azim=torch.tensor(self.phis).to(self.device),
                 radius=torch.tensor(self.radii).to(self.device),
+=======
+                
+                elev=torch.tensor( self.thetas).to(self.device), #MJ: elev should a tensor
+                azim=torch.tensor( self.phis).to(self.device),
+                radius=torch.tensor( self.radii).to(self.device),
+                
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
                 look_at_height=self.mesh_model.dy,
                 background_type='none'
             )
             
+<<<<<<< HEAD
             self.mask = mask #MJ: object_mask of the mesh
             self.depth_map = depth_map
             self.normals_image = normals_image
@@ -127,6 +166,69 @@ class TEXTure:
 
             # logger.info(f'Creating weight masks for each view')
             weight_masks = self.compare_face_normals_between_views(face_view_map, face_normals, face_idx)
+=======
+            logger.info(f'Generating face view map')
+
+            #MJ: get the binary masks for each view which indicates how much the image rendered from each view
+            # should contribute to the texture atlas over the mesh which is the cause of the image
+            face_view_map = self.create_face_view_map(face_idx)
+
+            # logger.info(f'Creating weight masks for each view')
+            weight_masks = self.compare_face_normals_between_views(face_view_map, face_normals, face_idx)
+
+            self.view_weights  = weight_masks
+            
+            for i in range( len(self.thetas) ):
+               
+                self.log_train_image(
+                    torch.cat((weight_masks[i][None], weight_masks[i][None], weight_masks[i][None]), dim=1),
+                    f'debug:weight_masks_{i}' )
+                
+                
+                self.log_train_image(
+                    torch.cat(( normals_image[i][None,-1:], normals_image[i][None,-1:], normals_image[i][None,-1:]), dim=1),
+                    f'debug:z_normals_{i}' )
+                #MJ: face_normals[views, 2, face_ids] 
+        
+        else: #MJ: when you use learn_max_z_normals, you compute the max_z_normals after you project_back the front view iamge
+              #by calling self.paint_viewpoint(), because it requires the initial meta_textuure_img,
+              #but learning max_z_normals changes self.meta_texture_img      
+              
+              #MJ: But before doing it, you need to learn max_z_normals if you use learn_max_z_normals 
+      # to define self.view_weights
+      
+        #if self.cfg.optim.learn_max_z_normals:    
+            # # JA: It computes the self.meta_texture_img which contains the best z normals of the pixel
+            # # images
+            self.project_back_max_z_normals()
+            #MJ: Render all views using self.meta_texture_img (max_z_normals) learned  by  self.project_back_max_z_normals()           
+            meta_outputs = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii,
+                                                    background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                    use_meta_texture=True, render_cache=None)
+            z_normals = meta_outputs["normals"][:,2:3,:,:].clamp(0, 1)
+            max_z_normals = meta_outputs['image'][:,0:1,:,:].clamp(0, 1) 
+            self.view_weights = self.compute_view_weights(z_normals, max_z_normals, alpha=self.cfg.optim.alpha) #MJ: = -50 , -100, -10000
+            #MJ: try to vary alpha from -1 to -10: If alpha approaches -10, 
+            # the face_idx whose z_normals are greater have more weights
+    
+            #MJ: for debugging:
+            max_z_normals_red =  meta_outputs['image'][:,:,:,:].clamp(0, 1)       
+            for i in range( len(self.thetas) ):
+               
+                self.log_train_image(
+                    torch.cat((z_normals[i][None], z_normals[i][None], z_normals[i][None]), dim=1),
+                    f'z_normals_{i}'
+                )
+                self.log_train_image( torch.cat( (max_z_normals[i][None], max_z_normals[i][None],
+                                                   max_z_normals[i][None]), dim=1), f'max_z_normals_gray_{i}' )
+                
+                self.log_train_image( max_z_normals_red[i][None], f'max_z_normals_red_{i}' )
+                
+                self.log_train_image( torch.cat( (self.view_weights[i][None], self.view_weights[i][None], self.view_weights[i][None]), dim=1),
+                                      f'view_weights_{i}' )  #MJ: view_weights: (B,1,H,W)
+          
+        #End of self.cfg.optim.learn_max_z_normals
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
             self.view_weights  = weight_masks
 
@@ -179,6 +281,8 @@ class TEXTure:
         image = image / 0.5 * 0.8
         return image
 
+
+      
 
     def create_face_view_map(self, face_idx):
         num_views, _, H, W = face_idx.shape  # Assume face_idx shape is (B, 1, H, W)
@@ -377,13 +481,29 @@ class TEXTure:
 
     def paint(self):
         if self.cfg.guide.use_zero123plus:
+            start_time = time.perf_counter()  # Record the start time
+            
             self.paint_zero123plus()
+            end_time = time.perf_counter()  # Record the end time
+            total_elapsed_time = end_time - start_time  # Calculate elapsed time
+
+            print(f"Total Elapsed time: {total_elapsed_time:.4f} seconds")
+
         else:
             self.paint_legacy()
 
     def paint_zero123plus(self):
         logger.info('Starting training ^_^')
+<<<<<<< HEAD
         # Evaluate the initialization
+=======
+        
+        zero123plus_prep_start_time = time.perf_counter()  # Record the end time
+        
+       
+        # Evaluate the initialization: Currently self.texture_img and self.meta_texture_img are not learned at all;
+        #MJ:  Because we are not learning the textures sequentially scanning over the viewpoints, this evaluation is meaningless
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         #MJ: self.evaluate(self.dataloaders['val'], self.eval_renders_path)
         self.mesh_model.train()
 
@@ -464,6 +584,7 @@ class TEXTure:
         self.z_normals_allviews = self.output_rendered_allviews['normals'].detach()[:, -1:, :, :].clamp(0, 1)  #MJ: z_normals can be computed as self.z_normals in the init method
         #z_normals_cache = meta_output['image'].clamp(0, 1) =>  z_normals_cache is not used
 
+<<<<<<< HEAD
         
         self.z_normals_cache = None
         self.object_mask_allviews = self.output_rendered_allviews['mask'].detach() # JA: mask has a shape of 1200x1200
@@ -506,8 +627,183 @@ class TEXTure:
             torch.cat((cropped_depths_rgba[1], cropped_depths_rgba[4]), dim=3),
             torch.cat((cropped_depths_rgba[2], cropped_depths_rgba[5]), dim=3),
             torch.cat((cropped_depths_rgba[3], cropped_depths_rgba[6]), dim=3),
-        ), dim=2)
+=======
+        # JA: This color is the same as the background color of the image grid generated by Zero123++.
+        background_gray = torch.Tensor([0.5, 0.5, 0.5]).to(self.device)
+        front_image = None
+        
+              
+        frontview_data_iter = iter(self.dataloaders['train'])
+        frontview_data = next(frontview_data_iter)  # Gets the first batch
+                        
+        front_view_start_time = time.perf_counter()  # Record the start time
+        rgb_output_front, object_mask_front = self.paint_viewpoint(frontview_data, should_project_back=True)
+        
+        front_view_end_time = time.perf_counter()  # Record the end time
+        front_view_elapsed_time = front_view_end_time - front_view_start_time  # Calculate elapsed time
 
+        print(f"Elapsed time in Front view image generation (with possible project-back): {front_view_elapsed_time} seconds")
+
+               
+        # JA: The object mask is multiplied by the output to erase any generated part of the image that
+        # "leaks" outside the boundary of the mesh from the front viewpoint. This operation turns the
+        # background black, but we would like to use a white background, which is why we set the inverse 
+        # of the mask to a ones tensor (the tensor is normalized to be between 0 and 1).
+        front_image = rgb_output_front * object_mask_front \
+            + torch.ones_like(rgb_output_front, device=self.device) * (1 - object_mask_front)
+                     
+             
+        outputs_with_magenta_map = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=background_gray)
+        rgb_renders_with_magenta_map =  outputs_with_magenta_map['image']
+        render_cache =  outputs_with_magenta_map['render_cache'] # 
+        
+        self.outputs = self.mesh_model.render(
+                background=background_gray,
+                render_cache=render_cache,
+                use_median=True  #MJ: Rendering the mesh again using use_median = True updates the default color
+                # region (magenta color) of texture map with the median color of the learned texture map from the front view
+                
+            )
+        
+        rgb_renders = self.outputs['image']
+        self.render_cache =  self.outputs['render_cache']
+        #MJ: prepare the front view image
+        min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(object_mask_front[0, 0])
+        crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+        cropped_front_image = crop(front_image)
+        
+        self.log_train_image(front_image, 'paint_zero123plus:front_image')
+        self.log_train_image(cropped_front_image, 'paint_zero123plus:cropped_front_image')
+
+        # masks = self.outputs['mask']
+        # bounding_boxes = utils.get_nonzero_region_vectorized( masks )    
+        # cropped_object_mask = utils.crop_mask_to_bounding_box( masks, bounding_boxes)
+        
+        
+        # JA: In the depth controlled Zero123++ code example, the test depth map is found here:
+        # https://d.skis.ltd/nrp/sample-data/0_depth.png
+        # As it can be seen here, the foreground is closer to 0 (black) and background closer to 1 (white).
+        # This is opposite of the SD 2.0 pipeline and the TEXTure internal renderer and must be inverted
+        # (i.e. 1 minus the depth map, since the depth map is normalized to be between 0 and 1)
+        depth = 1 - self.outputs['depth']
+      
+
+        # JA: The generated depth only has one channel, but the Zero123++ pipeline requires an RGBA image.
+        # The mask is the object mask, such that the background has value of 0 and the foreground a value of 1.
+        # MJ: the mask is used as the alpha; background alpha = 0 means that it is transparent
+        self.object_mask = self.outputs['mask']
+        depth_rgba = torch.cat((depth, depth, depth, self.object_mask), dim=1)
+
+         
+        #self.bounding_boxes = utils.get_nonzero_region_vectorized( self.object_mask )
+        #MJ: depth_rgba.shape:depth_rgba.shape: torch.Size([7, 4, 1200, 1200]) => Do the following for debugging
+        B, C, H, W =  self.object_mask.shape 
+        self.bounding_boxes = torch.zeros((B, 4), dtype=torch.int32)  # Prepare output tensor
+
+        for i in range( len(self.thetas) ):
+            mask_i = self.object_mask[i,0] #MJ: self.object_mask: shape=(7,1,1200,1200); mask_i: shape = (1200,1200)
+            bbox_i = utils.get_nonzero_region_tensor(mask_i)
+            
+            self.bounding_boxes[i,:] =  bbox_i
+     
+       #cropped_depth_rgba = utils.crop_img_to_bounding_box( depth_rgba, self.bounding_boxes)
+        cropped_depths_rgba_list = []
+        for i in range( len(self.thetas) ):
+            mask_i = self.object_mask[i,0]
+            min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(mask_i) #MJ: outputs["mask"][0, 0]: shape (1,1,H,W)
+            crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+            cropped_depth_rgba = crop(depth_rgba[i][None])
+            cropped_depths_rgba_list.append(cropped_depth_rgba)
+        
+        # max_cropped_image_height = max([box[2] - box[0] for box in self.bounding_boxes])
+        # max_cropped_image_width = max([box[3] - box[1] for box in self.bounding_boxes])
+        #MJ:  bounding_boxes[i, :] = torch.tensor([min_h, min_w, max_h, max_w])   
+        
+        # Compute the heights and widths
+        heights = self.bounding_boxes[:, 2] - self.bounding_boxes[:, 0]
+        widths = self.bounding_boxes[:, 3] - self.bounding_boxes[:, 1]
+
+        # Find the maximum height and width
+        max_cropped_image_height = torch.max(heights)
+        max_cropped_image_width = torch.max(widths)    
+        #cropped_depths_rgba = torch.cat( cropped_depths_rgba, dim=0) #MJ => concatenate is impossible because each element in the list has different shapes
+        for i, cropped_depth_rgba in enumerate(cropped_depths_rgba_list):
+           cropped_depths_rgba_list[i] = F.interpolate(
+                    cropped_depth_rgba,
+                    (max_cropped_image_height, max_cropped_image_width),
+                    mode='bilinear',
+                    align_corners=False
+                )
+            #MJ: cropped_depth_rgba.shape: torch.Size([7, 4, 937, 937])        
+        #self.cropped_rgb_render =  utils.crop_img_to_bounding_box(self.rgb_render_full, self.bounding_boxes) 
+      
+        self.cropped_rgb_renders_with_magenta_map_list  = []
+        for i in range( len(self.thetas) ):
+            mask_i = self.object_mask[i,0]
+            min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(mask_i) #MJ: outputs["mask"][0, 0]: shape (1,1,H,W)
+            crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+            cropped_rgb_render  = crop(  rgb_renders_with_magenta_map[i][None])
+            self.cropped_rgb_renders_with_magenta_map_list.append(cropped_rgb_render)
+            
+        self.cropped_rgb_renders_list  = []
+        for i in range( len(self.thetas) ):
+            mask_i = self.object_mask[i,0]
+            min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(mask_i) #MJ: outputs["mask"][0, 0]: shape (1,1,H,W)
+            crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+            cropped_rgb_render  = crop(  rgb_renders[i][None])
+            self.cropped_rgb_renders_list.append(cropped_rgb_render)
+        
+       # cropped_rgb_renders = torch.cat( cropped_rgb_renders, dim=0) 
+       # but got input with spatial dimensions of [3, 886, 886] and output size of (320, 320)               
+        cropped_rgb_renders_small_list =[]   
+        for i in range( len(self.thetas) ):    
+            cropped_rgb_renders_small_list.append( F.interpolate(
+                            self.cropped_rgb_renders_list[i], (320, 320),   
+                            mode='bilinear',
+                            align_corners=False
+            ))
+
+        # JA: the Zero123++ pipeline converts the latent space tensor z into pixel space
+        # tensor x in the following manner:
+        #   x = postprocess(unscale_image(vae_decode(unscale_latents(z) / scaling_factor)))
+        # It implies that  to convert pixel space tensor x into latent space tensor z, 
+        # the inverse operation must be applied in the following manner:
+        #   z = scale_latents(vae_encode(scale_image(preprocess(x))) * scaling_factor)
+
+        cropped_rgb_renders_small = torch.cat( cropped_rgb_renders_small_list, dim=0)
+
+        preprocessed_rgb_renders_small = self.zero123plus.image_processor.preprocess(cropped_rgb_renders_small)
+           
+        scaled_rgb_renders_small =  scale_image(preprocessed_rgb_renders_small.half() )
+        
+        scaled_latent_renders_small =  self.zero123plus.vae.encode(
+               scaled_rgb_renders_small,
+               return_dict=False
+            )[0].sample() * self.zero123plus.vae.config.scaling_factor 
+
+        self.gt_latents = scale_latents(scaled_latent_renders_small)
+                    
+             
+       
+
+
+        #MJ: cropped_depths_rgba_list is a list of tensors 
+    
+        # # JA: cropped_depths_rgba is a list that arranges the rows of the depth map, row by row
+        cropped_depth_grid = torch.cat((
+            torch.cat((cropped_depths_rgba_list[1], cropped_depths_rgba_list[4]), dim=3),
+            torch.cat((cropped_depths_rgba_list[2], cropped_depths_rgba_list[5]), dim=3),
+            torch.cat((cropped_depths_rgba_list[3], cropped_depths_rgba_list[6]), dim=3),
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
+        ), dim=2)
+        
+        # cropped_depth_grid = torch.cat((
+        #     torch.cat((cropped_depths_rgba[1][None], cropped_depths_rgba[4][None]), dim=3),
+        #     torch.cat((cropped_depths_rgba[2][None], cropped_depths_rgba[5][None]), dim=3),
+        #     torch.cat((cropped_depths_rgba[3][None], cropped_depths_rgba[6][None]), dim=3),
+        # ), dim=2)
+
+<<<<<<< HEAD
        
         self.log_train_image(self.cropped_front_image, 'cropped_front_image')
         self.log_train_image(self.cropped_depth_grid[:, 0:3], 'cropped_depth_grid') #MJ: self.cropped_depth_grid[:, 0:3].shape: torch.Size([1, 3, 3144, 2096])
@@ -520,6 +816,13 @@ class TEXTure:
         # self.depth_grid = combine_components_to_zero123plus_grid(self.depth_rgba_allviews, tile_size)
 
         #MJ: self.depth_rgba_allviews[1].shape: torch.Size([4, 1200, 1200])
+=======
+        #self.log_train_image(cropped_front_image, 'cropped_front_image')
+        self.log_train_image(cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
+        for i in range( len( self.thetas) ):
+           self.log_train_image(self.cropped_rgb_renders_list[i], f'v={i}: cropped_rgb_render')   
+      
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         # JA: From: https://pytorch.org/vision/main/generated/torchvision.transforms.ToPILImage.html
         # Converts a torch.*Tensor of shape C x H x W or a numpy ndarray of shape H x W x C to a PIL Image
         # while adjusting the value range depending on the mode.
@@ -527,6 +830,7 @@ class TEXTure:
         # Parameters: 
         # size – The requested size in pixels, as a 2-tuple: (width, height).
 
+<<<<<<< HEAD
         # JA: Zero123++ was trained with 320x320 images: https://github.com/SUDO-AI-3D/zero123plus/issues/70: 1200 => 
         self.cond_image = torchvision.transforms.functional.to_pil_image( self.cropped_front_image[0]).resize((320, 320))
         self.depth_grid_image = torchvision.transforms.functional.to_pil_image(self.cropped_depth_grid[0] ).resize((640, 960))
@@ -630,6 +934,227 @@ class TEXTure:
         generate_mask = torch.from_numpy(
             cv2.dilate(exact_generate_mask[0, 0].detach().cpu().numpy(), np.ones((19, 19), np.uint8))).to(
             exact_generate_mask.device).unsqueeze(0).unsqueeze(0)
+=======
+        # JA: Zero123++ was trained with 320x320 images: https://github.com/SUDO-AI-3D/zero123plus/issues/70
+        cond_image = torchvision.transforms.functional.to_pil_image(cropped_front_image[0]).resize((320, 320))
+        depth_image = torchvision.transforms.functional.to_pil_image(cropped_depth_grid[0]).resize((640, 960))
+
+        
+        
+        # # JA: From: https://pytorch.org/vision/main/generated/torchvision.transforms.ToPILImage.html
+        # # Converts a torch.*Tensor of shape C x H x W or a numpy ndarray of shape H x W x C to a PIL Image
+        # # while adjusting the value range depending on the mode.
+        # # From: https://www.geeksforgeeks.org/python-pil-image-resize-method/
+        # # Parameters: 
+        # # size – The requested size in pixels, as a 2-tuple: (width, height).
+
+        
+        # cropped_rgb_renders_tensor = \
+        #         torch.cat((
+        #             torch.cat(( cropped_rgb_renders_saved[0],cropped_rgb_renders_saved[3]), dim=3),
+        #             torch.cat(( cropped_rgb_renders_saved[1],cropped_rgb_renders_saved[4]), dim=3),
+        #             torch.cat(( cropped_rgb_renders_saved[2],cropped_rgb_renders_saved[5]), dim=3),
+        #         ), dim=2)
+        
+       
+        zero123plus_prep_end_time = time.perf_counter()  
+        elapsed_time =  zero123plus_prep_end_time -  zero123plus_prep_start_time
+        print(f'zero123plus_prep_time={elapsed_time:0.4f}')
+        
+            
+        @torch.enable_grad
+        def on_step_end(pipeline, iter, t, callback_kwargs):
+            
+            on_step_end_start_time = time.perf_counter()  # Record the start time
+                          
+                
+            grid_latent = callback_kwargs["latents"]
+
+            latents = split_zero123plus_grid(grid_latent, 320 // pipeline.vae_scale_factor)
+            blended_latents = []
+            
+            
+            #cropped_rgb_renders =[]
+            
+            for v in range( len(self.thetas) ): #MJ: v=0,1,...,6: 
+                if v  == 0:
+                    continue  #MJ: This loop processes only the results of the zero123plus latents; so skip the front viewpoint
+
+                image_row_index = (v - 1) % 3
+                image_col_index = (v - 1) // 3
+
+                latent = latents[image_row_index][image_col_index]
+
+                #MJ: In TEXTure, the latent image generated by the text-to-image pipeline from a given viewpoint
+                # is blended/inpainted with the image rendered from the mesh from that viewpoint using the currently learned 
+                # texture atlas. This blended latent is used as the input to the next step of denoising.
+                # This enforces the generated image to align with the correct image rendered using the correct part of the 
+                # texture atlas corresponding to the front viewpoint.  The texture atlas is partly learned from the front view image.
+                # 
+                # In a new viewpoint, when the image rendered using the partly learned texture atlas 
+                # may contain the part which is rendered from the part of the texture atlas with the
+                # initial magenta color. If so, it means that for this part, the image should be generated by the generation
+                # pipeline. That is, if the newly rendered image is not different from the default texture color, 
+                # it is taken to mean that the new region should be painted by the generated image.isidentifier()
+                # But, the new region should be well-aligned with the part that is already valid; This part is
+                # considered as the background in the context of inpainting.
+                
+                #MJ: Why use cropped_rgb_render_raw (the image rendered without median_color) to compute diff??
+                # diff = ( self.cropped_rgb_renders_list[v].detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
+                #      self.device) ).abs().sum(axis=1)
+                diff = ( self.cropped_rgb_renders_with_magenta_map_list[v].detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
+                      self.device) ).abs().sum(axis=1)
+                
+                diff_batch = diff.unsqueeze(0)
+                self.log_train_image( torch.cat( [diff_batch,diff_batch,diff_batch], dim=1),  f'v=diff-{v}:')        
+                exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
+                self.log_train_image( torch.cat( [exact_generate_mask,exact_generate_mask,exact_generate_mask], dim=1),  f'v=exact_generate_mask-{v}:')        
+                # Dilate the bounary of the  mask
+                generate_mask = torch.from_numpy(
+                    cv2.dilate(exact_generate_mask[0, 0].detach().cpu().numpy(), np.ones((19, 19), np.uint8))).to(
+                    exact_generate_mask.device).unsqueeze(0).unsqueeze(0)
+
+                curr_mask = F.interpolate(
+                    generate_mask,
+                    (320 // pipeline.vae_scale_factor, 320 // pipeline.vae_scale_factor),
+                    mode='nearest'
+                )
+
+                self.log_train_image( torch.cat( [curr_mask,curr_mask,curr_mask], dim=1),  f'curr_mask-v={v}') 
+               
+                # JA: the Zero123++ pipeline converts the latent space tensor z into pixel space
+                # tensor x in the following manner:
+                #   x = postprocess(unscale_image(vae_decode(unscale_latents(z) / scaling_factor)))
+                # It implies that  to convert pixel space tensor x into latent space tensor z, 
+                # the inverse operation must be applied in the following manner:
+                #   z = scale_latents(vae_encode(scale_image(preprocess(x))) * scaling_factor)
+
+
+                gt_latent = self.gt_latents[v] #MJ: v=1,2,..5,6
+                
+                noise = torch.randn_like(gt_latent)
+                noised_truth = pipeline.scheduler.add_noise(gt_latent, noise, t[None])
+
+                # 
+                # This blending equation is originally from TEXTure
+                blended_latent = latent * curr_mask + noised_truth * (1 - curr_mask) 
+                #MJ: for debugging, skip the blending to test if the zero123++ generates images correctly            
+                #blended_latent = latent
+
+                blended_latents.append(blended_latent)
+            #End  for viewpoint_index, data in enumerate(self.dataloaders['train'])
+   
+        
+            callback_kwargs["latents"] = torch.cat((
+                torch.cat((blended_latents[0], blended_latents[3]), dim=3),
+                torch.cat((blended_latents[1], blended_latents[4]), dim=3),
+                torch.cat((blended_latents[2], blended_latents[5]), dim=3),
+            ), dim=2).half()
+            
+            on_step_end_end_time = time.perf_counter()  # Record the end time
+            elapsed_time = on_step_end_end_time - on_step_end_start_time # Calculate elapsed time
+
+            print(f"Elapsed time in one on_step_end={i}: {elapsed_time} seconds")
+
+            #MJ: For debugging, save   grid_latent, the latent being denoised at the current step i
+            # x = postprocess(unscale_image(vae_decode(unscale_latents(z) / scaling_factor)))
+             
+            unscaled_latent = unscale_latents(grid_latent)  #MJ: grid_latent = callback_kwargs["latents"]
+            scaled_image =  pipeline.vae.decode(
+                 unscaled_latent/pipeline.vae.config.scaling_factor,
+                return_dict=False
+             )[0]  
+            unscaled_image = unscale_image(scaled_image)
+            #scaled_image.requires_grad = False #MJ: somehow pipeline.vae.decode converts the tensor to the tensor with requires_grad= True
+            #MJ: you can only change requires_grad flags of leaf variables. 
+            # If you want to use a computed variable in a subgraph that doesn't require differentiation 
+            # use var_no_grad = var.detach().
+            unscaled_image_no_grad =  unscaled_image.detach()
+                   
+            do_denormalize = [True] * unscaled_image_no_grad.shape[0]
+            postprocessed_image =  pipeline.image_processor.postprocess(unscaled_image_no_grad, output_type='pil', do_denormalize= do_denormalize) #.postprocess does not like it
+            #Normalize an image array to [-1,1]. => denormalize into [0,1]
+            # Now, let's save this image
+            postprocessed_image[0].save(self.train_renders_path/f'step={iter}:decoded_latent_image_in_PIL.jpg')
+            
+            #MJ: unscaled_image has not been de-normalized into (0,1) by the function which returns it; The de-normalization is performed
+            #at the end of the denoising.
+            decoded_image = pipeline.image_processor.denormalize(unscaled_image_no_grad[0])
+            self.log_train_image( decoded_image[None], f'decoded latent imag in tensor-step={iter}:v={v}')   #scaled_image.max(); 7.5703; scaled_image.min(): -7.8477; 
+             #  scaled_image.min(); -12.5547; unscaled_image.max(): 12.1094; unscaled_image.shape: [1, 3, 960, 640]
+             
+             
+            if iter > 30:
+                print(f'at iter={iter}:decoded_image.max(), decoded_image.min() = {unscaled_image.max()}, {unscaled_image.min()}')
+                # Check which pixel values fall within the range (0, 1)
+                valid_pixel_mask = (decoded_image >=0) & (decoded_image <= 1)
+
+                # Calculate the percentage of valid pixels
+                percentage_valid_pixels = torch.mean(valid_pixel_mask.float()) * 100  # Convert to percentage
+
+                print(f"Percentage of pixel values within (0, 1): {percentage_valid_pixels.item():.2f}%")
+                
+                import matplotlib.pyplot as plt
+
+                # Plot a histogram of the pixel values
+                plt.hist(decoded_image.view(-1).cpu().numpy(), bins=100, range=(0,1))
+                plt.title('Pixel Value Distribution')
+                plt.xlabel('Pixel Values')
+                plt.ylabel('Frequency')
+                # Save the plot as a PNG file
+                plt.savefig(self.train_renders_path/f'step={iter}:decoded_image_histogram.jpg')
+            #We did the reverse of the following:
+            # scaled_rgb_renders_small =  scale_image(preprocessed_rgb_renders_small.half() )
+        
+            # scaled_latent_renders_small =  self.zero123plus.vae.encode(
+            #    scaled_rgb_renders_small,
+            #    return_dict=False
+            # )[0].sample() * self.zero123plus.vae.config.scaling_factor 
+
+            # self.gt_latents = scale_latents(scaled_latent_renders_small) 
+            
+            #Consult the zero123plus pipeline _call_():
+            
+        # latents = unscale_latents(latents)
+        # if not output_type == "latent":
+        #     image = unscale_image(self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0])
+        # else:
+        #     image = latents
+
+        # image = self.image_processor.postprocess(image, output_type=output_type)
+        
+             
+            return callback_kwargs
+        
+        #End  def on_step_end(pipeline, i, t, callback_kwargs) 
+        # JA: Here we call the Zero123++ pipeline
+
+        zero123_start_time = time.perf_counter()  # Record the end time
+        
+        result = self.zero123plus(
+            cond_image,
+            depth_image=depth_image,
+            num_inference_steps=50,#36,
+            callback_on_step_end=on_step_end
+        ).images[0]
+        #MJ: return  image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
+
+        
+        zero123_end_time = time.perf_counter()  # Record the end time
+        elapsed_time = zero123_end_time - zero123_start_time # Calculate elapsed time
+
+        print(f"Elapsed time in zero123 sampling: {elapsed_time} seconds")
+
+      #MJ: Now that the images for the 7 views are generated, project back them to construct the texture atlas
+      
+        project_back_prep_start_time =  time.perf_counter()  # Record the end time
+               
+        grid_image = torchvision.transforms.functional.pil_to_tensor(result).to(self.device).float() / 255
+
+        self.log_train_image(grid_image[None], 'zero123plus:result_grid_image')
+
+        images = split_zero123plus_grid(grid_image, 320)
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         #MJ: downscale the generate_mask to the size of the latent space, because it is used to blend those images in the latent space
         self.curr_mask = F.interpolate(  #MJ: 1200x1200 => 320/8 x 320/ 8
@@ -699,6 +1224,7 @@ class TEXTure:
                         return_dict=False
                     )[0].sample() * self.zero123plus.vae.config.scaling_factor
                 )
+<<<<<<< HEAD
                 #MJ: self.gt_latents_rendered_allviews is considered to be already noisy, because it has been rendered using the noisy
                 # texture atlas being "denoised"/learned
                 noised_gt_latents_rendered_allviews =   self.gt_latents_rendered_allviews
@@ -953,6 +1479,83 @@ class TEXTure:
             
                    
         #End  def on_step_end(pipeline, i, t, callback_kwargs)
+=======
+
+                min_h,min_w, max_h, max_w = self.bounding_boxes[i]
+                #MJ: Use self.bounding_boxes instead of the following code:
+      
+                # nonzero_region = viewpoint_data[i]["nonzero_region"]
+                # min_h, min_w = nonzero_region["min_h"], nonzero_region["min_w"]
+                # max_h, max_w = nonzero_region["max_h"], nonzero_region["max_w"]
+
+                cropped_rgb_output = F.interpolate(
+                    cropped_rgb_output,
+                    (max_h - min_h, max_w - min_w),
+                    mode='bilinear',
+                    align_corners=False
+                )
+
+                # JA: We initialize rgb_output, the image where cropped_rgb_output will be "pasted into." Since the
+                # renderer produces tensors (depth maps, object mask, etc.) with a height and width of 1200, rgb_output
+                # is initialized with the same size so that it aligns pixel-wise with the renderer-produced tensors.
+                # Because Zero123++ generates non-transparent images, that is, images without an alpha channel, with
+                # a background of rgb(0.5, 0.5, 0.5), we initialize the tensor using torch.ones and multiply by 0.5.
+                rgb_output = torch.ones(
+                    cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], 1200, 1200
+                ).to(rgb_output.device) * 0.5
+
+                rgb_output[:, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
+
+                rgb_output = F.interpolate(rgb_output, (1200, 1200), mode='bilinear', align_corners=False)
+            #End else:
+            rgb_outputs.append(rgb_output)
+        #End for i, data in enumerate(self.dataloaders['train'])
+        
+        #MJ: Project-back the generated view images, rgb_outputs, to the texture atlas.
+        # outputs = self.mesh_model.render(theta=self.thetas, phi=self.phis, radius=self.radii, background=background)
+
+        # render_cache = outputs['render_cache'] # JA: All the render outputs have the shape of (1200, 1200)
+
+        # # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
+        # outputs = self.mesh_model.render(background=background,  #When render_cache is not None, the camera pose is not needed
+        #                                 render_cache=render_cache, use_median=True)
+
+        # # Render meta texture map
+        # meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+        #                                     use_meta_texture=True, render_cache=render_cache)
+
+        # # JA: Get the Z component of the face normal vectors relative to the camera
+        # z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
+        # z_normals_cache = meta_output['image'].clamp(0, 1)
+        # object_mask = outputs['mask'] # JA: mask has a shape of 1200x1200
+
+        #MJ:  self.project_back_only_texture_atlas:
+        # self.project_back_only_texture_atlas(
+        #      render_cache=render_cache, background=background, rgb_output=torch.cat(rgb_outputs),
+        #     object_mask=object_mask, update_mask=object_mask, z_normals=z_normals, z_normals_cache=z_normals_cache
+            
+        # )
+        
+        project_back_prep_end_time =  time.perf_counter()  # Record the end time
+        
+        elapsed_time = project_back_prep_end_time - project_back_prep_start_time
+        print(f'project-back prep time={elapsed_time:0.4f}')
+        
+        
+        project_back_start_time =  time.perf_counter()  # Record the end time
+        self.project_back_only_texture_atlas(   #When render_cache is not None, the camera pose is not needed
+             render_cache=self.render_cache, background=background_gray, rgb_output=torch.cat(rgb_outputs),
+            object_mask=self.object_mask, update_mask=self.object_mask, z_normals=None, z_normals_cache=None
+            
+        )
+        
+                
+        project_back_end_time =  time.perf_counter()  # Record the end time 
+        
+        elapsed_time = project_back_end_time - project_back_start_time
+        print(f'project-back  time={elapsed_time:0.4f}')
+        
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         
         # JA: Here we call the Zero123++ pipeline
         result = self.zero123plus(
@@ -965,8 +1568,11 @@ class TEXTure:
         self.mesh_model.change_default_to_median()
         logger.info('Finished Painting ^_^')
         logger.info('Saving the last result...')
-        self.full_eval()
-        logger.info('\tDone!')
+        
+        #MJ: Render the mesh using the learned texture atlas from a lot of regularly sampled viewpoints
+        # and create a video from the rendered image sequence and 
+        self.full_eval() 
+        logger.info('\t All Done!')
 
     def paint_legacy(self):
         logger.info('Starting training ^_^')
@@ -993,43 +1599,67 @@ class TEXTure:
         self.full_eval()
         logger.info('\tDone!')
 
+<<<<<<< HEAD
     def evaluate(self, dataloader: DataLoader, save_path: Path, save_as_video: bool = False):
         #MJ: logger.info(f'Evaluating and saving model, painting iteration #{self.paint_step}...')
         logger.info(f'Evaluating and saving model, painting iteration...')
+=======
+    def evaluate(self, dataloader: DataLoader, save_path: Path, save_as_video: bool = False): #MJ: dataloader=self.dataloaders['val']
+        logger.info(f'Evaluating and saving model, painting iteration #{self.paint_step}...')
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         self.mesh_model.eval()
         save_path.mkdir(exist_ok=True)
 
-        if save_as_video:
+        if save_as_video: #MJ: false in our experiment
             all_preds = []
+<<<<<<< HEAD
         for i, data in enumerate(dataloader):  #MJ: len(dataloader) = 100; 
             preds, textures, depths, normals = self.eval_render(data)
+=======
+        for i, data in enumerate(dataloader):
+            preds, textures, depths, normals = self.eval_render(data) #MJ: preds, textures, depths, normals = rgb_render, texture_rgb, depth_render, pred_z_normals
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
             pred = tensor2numpy(preds[0])
 
             if save_as_video:
                 all_preds.append(pred)
             else:
+<<<<<<< HEAD
                 Image.fromarray(pred).save(save_path / f"{i:04d}_rgb.jpg")
                 Image.fromarray((cm.seismic(normals[0, 0].cpu().numpy())[:, :, :3] * 255).astype(np.uint8)).save(
                     save_path / f'{i:04d}_normals_cache.jpg')
+=======
+                Image.fromarray(pred).save(save_path / f"eval:rendered_image:{i:04d}_rgb.jpg")
+                Image.fromarray((cm.seismic(normals[0, 0].cpu().numpy())[:, :, :3] * 255).astype(np.uint8)).save(
+                    save_path / f'eval:normal_map:{i:04d}_normals_cache.jpg')
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
                 if self.paint_step == 0:
                     # Also save depths for debugging
-                    torch.save(depths[0], save_path / f"{i:04d}_depth.pt")
+                    torch.save(depths[0], save_path / f"eval:depth_map:{i:04d}_depth.pt")
 
         # MJ: There are 100 predicted rendered images; the texture maps are also returned, but the texture is the same for all views
         # just take the last result, the 100th
         texture = tensor2numpy(textures[0])
+<<<<<<< HEAD
         Image.fromarray(texture).save(save_path / f"texture.png")
+=======
+        Image.fromarray(texture).save(save_path / f"eval:texture_atlas:texture.png")
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         if save_as_video:
             all_preds = np.stack(all_preds, axis=0)
 
+<<<<<<< HEAD
             dump_vid = lambda video, name: imageio.mimsave(save_path / f"{name}.mp4", video,
+=======
+            dump_vid = lambda video, name: imageio.mimsave(save_path / f"eval:constructed_video:{name}.mp4", video,
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
                                                            fps=25,
                                                            quality=8, macro_block_size=1)
 
-            dump_vid(all_preds, 'rgb')
-        logger.info('Done!')
+            dump_vid(all_preds, 'all_rendered_rgb')
+        logger.info('Eval Done!')
 
     def full_eval(self, output_dir: Path = None):
         if output_dir is None:
@@ -1045,7 +1675,7 @@ class TEXTure:
 
             self.mesh_model.export_mesh(save_path)
 
-            logger.info(f"\tDone!")
+            logger.info(f"\t Full Eval Done!")
 
     # JA: paint_viewpoint computes a portion of the texture atlas for the given viewpoint
     def paint_viewpoint(self, data: Dict[str, Any], should_project_back=True): #MJ: called with  should_project_back=False
@@ -1073,6 +1703,7 @@ class TEXTure:
         rgb_render_raw = outputs['image']  # Render where missing values have special color
         depth_render = outputs['depth']
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
+<<<<<<< HEAD
         #MJ: The following call is not used in zero123plus version; MJ: use_media = False by default (that is at self.paint_step=0)
         outputs = self.mesh_model.render(background=background,  #MJ: self.paint_step  refers to the viewpoint step
                                          render_cache=render_cache, use_median=self.paint_step > 1, use_batch_render=False)
@@ -1090,6 +1721,25 @@ class TEXTure:
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
         #MJ: self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
+=======
+        #MJ: In ConTEXTure, the use of the following render does not change anything, because use_median is False
+        # when self.paint_step = 1 (in the case of the front view painting)
+        outputs = self.mesh_model.render(background=background,
+                                         render_cache=render_cache, use_median=self.paint_step > 1)
+        rgb_render = outputs['image']
+        # # Render meta texture map: MJ: in ConTEXTure, we use paint_viewpoint only for the front viewpoint, and we do not need to consider the meta_texture (max_z_normals) here
+        # meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+        #                                      use_meta_texture=True, render_cache=render_cache)
+
+        # z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
+        # z_normals_cache = meta_output['image'].clamp(0, 1)
+        # edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
+
+        self.log_train_image(rgb_render, 'paint_viewpoint:rgb_render')
+        self.log_train_image(depth_render[0, 0], 'paint_viewpoint:depth', colormap=True)
+        # self.log_train_image(z_normals[0, 0], 'paint_viewpoint:z_normals', colormap=True)
+        # self.log_train_image(z_normals_cache[0, 0], 'paint_viewpoint:z_normals_cache', colormap=True)
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         # text embeddings
         if self.cfg.guide.append_direction:
@@ -1101,6 +1751,7 @@ class TEXTure:
             text_string = self.text_string
         logger.info(f'text: {text_string}')
 
+<<<<<<< HEAD
         # JA: Create trimap of keep, refine, and generate using the render output
         
         update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
@@ -1109,35 +1760,65 @@ class TEXTure:
                                                                         z_normals_cache=z_normals_cache,
                                                                         edited_mask=edited_mask,
                                                                         mask=outputs['mask'])
+=======
+        #MJ: Because we do not consider each viewpoint in a sequence to project-back the view image to the texture-atlas, we do not use the trimap
+        # # JA: Create trimap of keep, refine, and generate using the render output
+        # update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
+        #                                                                 depth_render=depth_render,
+        #                                                                 z_normals=z_normals,
+        #                                                                 z_normals_cache=z_normals_cache,
+        #                                                                 edited_mask=edited_mask,
+        #                                                                 mask=outputs['mask'])
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
-        update_ratio = float(update_mask.sum() / (update_mask.shape[2] * update_mask.shape[3]))
-        if self.cfg.guide.reference_texture is not None and update_ratio < 0.01:
-            logger.info(f'Update ratio {update_ratio:.5f} is small for an editing step, skipping')
-            return
+        # update_ratio = float(update_mask.sum() / (update_mask.shape[2] * update_mask.shape[3]))
+        # if self.cfg.guide.reference_texture is not None and update_ratio < 0.01:
+        #     logger.info(f'Update ratio {update_ratio:.5f} is small for an editing step, skipping')
+        #     return
 
-        self.log_train_image(rgb_render * (1 - update_mask), name='masked_input')
-        self.log_train_image(rgb_render * refine_mask, name='refine_regions')
+        # self.log_train_image(rgb_render * (1 - update_mask), name='paint_viewpoint:masked_rgb_render')
+        # self.log_train_image(rgb_render * refine_mask, name='paint_viewpoint:refine_rgb_render')
 
         # Crop to inner region based on object mask
+<<<<<<< HEAD
         min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs['mask'][0, 0])
         
         crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]  #MJ: select the object region from tensor x
         
+=======
+        min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(outputs['mask'][0, 0])
+        crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         cropped_rgb_render = crop(rgb_render) # JA: This is rendered image which is denoted as Q_0.
                                               # In our experiment, 1200 is cropped to 827
         cropped_depth_render = crop(depth_render)
+        
+        #MJ: Because we do not consider each viewpoint in a sequence to project-back the view image to the texture-atlas,
+        # we do not use the trimap and so not use update_mask and refine_mask; object_mask is used as the update_mask
+        #MJ: cropped_update_mask = crop(update_mask)
+        
+        update_mask = outputs['mask']
         cropped_update_mask = crop(update_mask)
+<<<<<<< HEAD
        
         self.log_train_image(cropped_rgb_render, name='cropped_input')
         self.log_train_image(cropped_depth_render.repeat_interleave(3, dim=1), name='cropped_depth')
+=======
+        self.log_train_image(cropped_rgb_render, name='paint_viewpoint:cropped_rgb_render')
+        self.log_train_image(cropped_depth_render.repeat_interleave(3, dim=1), name='paint_viewpoint:cropped_depth')
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         checker_mask = None
-        if self.paint_step > 1 or self.cfg.guide.initial_texture is not None:
-            # JA: generate_checkerboard is defined in formula 2 of the paper
-            checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),
-                                                      crop(generate_mask))
-            self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
-                                 'checkerboard_input')
+        
+         #MJ: Because we do not consider each viewpoint in a sequence to project-back the view image to the texture-atlas,
+        # we do not use the trimap and so not use update_mask and refine_mask
+        
+        # if self.paint_step > 1 or self.cfg.guide.initial_texture is not None:
+        #     # JA: generate_checkerboard is defined in formula 2 of the paper
+        #     checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),
+        #                                               crop(generate_mask))
+        #     self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
+        #                          'checkerboard_input')
         self.diffusion.use_inpaint = self.cfg.guide.use_inpainting and self.paint_step > 1
         # JA: self.zero123_front_input has been added for Zero123 integration
         if self.zero123_front_input is None:
@@ -1170,6 +1851,12 @@ class TEXTure:
 
         # JA: So far, the render image was created. Now we generate the image using the SD pipeline
         # Our pipeline uses the rendered image in the process of generating the image.
+        
+    
+        start_time = time.perf_counter()  # Record the start time
+        #rgb_output_front, object_mask_front = self.paint_viewpoint(data, should_project_back=True)
+        
+        
         cropped_rgb_output, steps_vis = self.diffusion.img2img_step(text_z, cropped_rgb_render.detach(), # JA: We use the cropped rgb output as the input for the depth pipeline
                                                                     cropped_depth_render.detach(),
                                                                     guidance_scale=self.cfg.guide.guidance_scale,
@@ -1186,7 +1873,17 @@ class TEXTure:
                                                                     theta=data['base_theta'] - data['theta'],
                                                                     condition_guidance_scales=condition_guidance_scales)
 
+<<<<<<< HEAD
         self.log_train_image(cropped_rgb_output, name='cropped_rgb_output')
+=======
+
+        end_time = time.perf_counter()  # Record the end time
+        elapsed_time = end_time - start_time  # Calculate elapsed time
+
+        print(f"Elapsed time in self.diffusion.img2img_step in TEXTureWithZero123: {elapsed_time:0.4f} seconds")
+        
+        self.log_train_image(cropped_rgb_output, name='paint_viewpoint:cropped_rgb_output')
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         self.log_diffusion_steps(steps_vis)
         # JA: cropped_rgb_output, as the output of sd pipeline, always has a shape of (512, 512); recover the resolution of the nonzero rendered image (e.g. (827, 827))
         cropped_rgb_output = F.interpolate(cropped_rgb_output, 
@@ -1202,12 +1899,28 @@ class TEXTure:
         # Project back
         object_mask = outputs['mask'] # JA: mask has a shape of 1200x1200
         # JA: Compute a part of the texture atlas corresponding to the target render image of the specific viewpoint
+<<<<<<< HEAD
         
         if should_project_back:  #MJ: not used in zero123plus version
             fitted_pred_rgb, _ = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
                                                 object_mask=object_mask, update_mask=update_mask, z_normals=z_normals,
                                                 z_normals_cache=z_normals_cache)
             self.log_train_image(fitted_pred_rgb, name='fitted')
+=======
+        if should_project_back:
+            fitted_pred_rgb = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
+                                                object_mask=object_mask, update_mask=update_mask, z_normals=None, #MJ z_normals=z_normals,
+                                                z_normals_cache=None #MJ: z_normals_cache=z_normals_cache
+                                                )
+                                                                                             
+            self.log_train_image(fitted_pred_rgb, name='paint_viewpoint:fitted_pred_rgb')
+            #MJ: for debugging: what happens if the following update of rgb_output is not made, 
+            # when the previous rgb_output which was not rendered using the learned texture atlas from the front viewpoint.
+            # rgb_output = fitted_pred_rgb  #MJ: fitted_pred_rgb  is the rendered image obtained using the learned texture atlas from the current view
+            # outputs['image'] =  rgb_output  #MJ: This is not need for the current experiment
+            
+            
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         # JA: Zero123 needs the input image without the background
         # rgb_output is the generated and uncropped image in pixel space
@@ -1230,7 +1943,13 @@ class TEXTure:
         #     'theta': data['theta']
         # })
 
+<<<<<<< HEAD
         self.log_train_image(zero123_input, name='zero123_input(front_image)')
+=======
+        self.log_train_image(zero123_input, name='paint_viewpoint:zero123_cond_image')
+
+        return rgb_output, object_mask
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
         #MJ: return rgb_output, object_mask
         return outputs
@@ -1245,6 +1964,7 @@ class TEXTure:
         
         outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius,
                                          dims=(dim, dim), background='white')
+        
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
         rgb_render = outputs['image']  # .permute(0, 2, 3, 1).contiguous().clamp(0, 1)
         
@@ -1263,6 +1983,7 @@ class TEXTure:
         meta_output = self.mesh_model.render(theta=theta, phi=phi, radius=radius,
                                              background=torch.Tensor([0, 0, 0]).to(self.device),
                                              use_meta_texture=True, render_cache=outputs['render_cache'])
+        
         pred_z_normals = meta_output['image'][:, :1].detach()
         rgb_render = rgb_render.permute(0, 2, 3, 1).contiguous().clamp(0, 1).detach()
         
@@ -1363,6 +2084,9 @@ class TEXTure:
                                                         update_mask_base_inner == 0).float(), (512, 512))
         checker_mask[only_old_mask == 1] = checkerboard[only_old_mask == 1]
         return checker_mask
+    
+    #MJ: project_back() used only for the front view image, so we do not need to learn the meta-texture-img which holds
+    #    the max_z_normals
 
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
@@ -1409,11 +2133,13 @@ class TEXTure:
         for i in range(rgb_output.shape[0]):
             self.log_train_image(rgb_output[i][None] * render_update_mask[i][None], f'project_back_input_{i}')
 
-        # Update the normals
-        if z_normals is not None and z_normals_cache is not None:
-            z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
+        # Update the normals:
+        # project_back() used only for the front view image, so we do not need to learn the meta-texture-img which holds
+        #    the max_z_normals
+        # if z_normals is not None and z_normals_cache is not None:
+        #     z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
 
-        optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
+        optimizer = torch.optim.Adam(self.mesh_model.get_params_texture_atlas(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
                                      eps=1e-15)
             
         # JA: Create the texture atlas for the mesh using each view. It updates the parameters
@@ -1422,7 +2148,8 @@ class TEXTure:
         # between the specific image and the rendered image, rendered using the current estimate
         # of the texture atlas.
         # losses = []
-        for _ in tqdm(range(200), desc='fitting mesh colors'):
+        with  tqdm(range(200), desc='project_back (SD2): fitting mesh colors for the front view') as pbar:
+          for i in pbar:  
             optimizer.zero_grad()
             outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
@@ -1434,30 +2161,41 @@ class TEXTure:
             masked_mask = mask[mask > 0]
             loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean()
 
-            if z_normals is not None and z_normals_cache is not None:
-                meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
-                                                    use_meta_texture=True, render_cache=render_cache)
-                current_z_normals = meta_outputs['image']
-                current_z_mask = meta_outputs['mask'].flatten()
-                masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
-                                        current_z_mask == 1][:, :1]
-                masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
-                                        current_z_mask == 1][:, :1]
-                loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
+            #MJ: 
+            # project_back() used only for the front view image, so we do not need to learn the meta-texture-img which holds
+            #    the max_z_normals
+            # if z_normals is not None and z_normals_cache is not None:
+            #     meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+            #                                         use_meta_texture=True, render_cache=render_cache)
+            #     current_z_normals = meta_outputs['image']
+            #     current_z_mask = meta_outputs['mask'].flatten()
+            #     masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
+            #                             current_z_mask == 1][:, :1]
+            #     masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
+            #                             current_z_mask == 1][:, :1]
+            #     loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
             # losses.append(loss.cpu().detach().numpy())
+            
+            pbar.set_description(f"project_back (SD2): Fitting mesh colors -Epoch {i + 1}, Loss: {loss.item():.7f}")
             loss.backward() # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
                             # the network, that is, the pixel value of the texture atlas
             optimizer.step()
 
-        if z_normals is not None and z_normals_cache is not None:
-            return rgb_render, current_z_normals
-        else:
-            return rgb_render
+        # if z_normals is not None and z_normals_cache is not None:
+        #     return rgb_render, current_z_normals
+        # else:
+        
+        #MJ: with  tqdm(range(200), desc='project_back (SD2): fitting mesh colors for the front view') as pbar:
+        return rgb_render
         
     def project_back_only_texture_atlas(self,  thetas: List[float], phis: List[float], radii: List[float], 
                                         render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
+<<<<<<< HEAD
                      z_normals_cache: torch.Tensor
+=======
+                      z_normals_cache: torch.Tensor                   
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
                      ):
         
         optimizer = torch.optim.Adam(self.mesh_model.get_params_texture_atlas(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
@@ -1490,8 +2228,17 @@ class TEXTure:
             blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
 
         render_update_mask = blurred_render_update_mask
+<<<<<<< HEAD
         
         if self.cfg.optim.interleaving:
+=======
+               
+        for i in range(rgb_output.shape[0]):
+           self.log_train_image(rgb_output[i][None] * render_update_mask[i][None], f'project_back_input_{i}')  
+           
+        optimizer = torch.optim.Adam(self.mesh_model.get_params_texture_atlas(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
+                                     eps=1e-15)
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
             
             for i in range(rgb_output.shape[0]):
                 self.log_train_image(rgb_output[i][None] * render_update_mask[i][None], f'iter={self.iter}: project_back_input_{i}')
@@ -1506,6 +2253,7 @@ class TEXTure:
         # between the specific image and the rendered image, rendered using the current estimate
         # of the texture atlas.
         # losses = []
+<<<<<<< HEAD
         if self.cfg.optim.interleaving:
           weight_of_curr_project_back =  (self.iter+1) // 36
         else:
@@ -1628,15 +2376,206 @@ class TEXTure:
            
         #End for v in range(self.thetas)    # scan over the 7 views 
                 
+=======
+
+        # JA: TODO: Add num_epochs hyperparameter
+        with tqdm(range(200), desc='project_back_only_texture_atla: fitting mesh colors') as pbar:
+            for iter in pbar:
+                optimizer.zero_grad()
+                outputs = self.mesh_model.render(background=background,
+                                                render_cache=render_cache)  
+                #MJ: with render_cache not None => render() omits the raterization process, uses the cache of its results
+                #  and only performs the texture mapping projection => take much less time than performing a full rendering 
+                                                   
+                rgb_render = outputs['image']
+                
+                # for i in range(rgb_render.shape[0]):
+                #     self.log_train_image(rgb_render[i][None] * render_update_mask[i][None], f'project_back: rgb-output_{i}')  
+           
+                #MJ: z_normals = outputs['normal'][:,-1,:,:]
+
+                # loss = (render_update_mask * (rgb_render - rgb_output.detach()).pow(2)).mean()
+                #loss = (render_update_mask * z_normals * (rgb_render - rgb_output.detach()).pow(2)).mean()
+                #BY MJ:
+                #MJ: Try the following three weight_masks
+                #1) weight_masks computed by compare_between_views
+                #2) use weight-masks based on z_normals
+                # weight_masks = self.compute_view_weights( z_normals )
+                #3) use weight-masks as best_z_normals
+                
+                #MJ: loss = (render_update_mask * weight_masks * (rgb_render - rgb_output.detach()).pow(2)).mean()
+                loss = (render_update_mask * self.view_weights * (rgb_render - rgb_output.detach()).pow(2)).mean()
+                loss.backward(retain_graph=True) # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
+                                # the network, that is, the pixel value of the texture atlas
+                                #MJ:  if the loss is now dependent on some stateful or iterative operation, it might need to retain the graph.
+              
+                #loss.backward()
+                optimizer.step()
+                pbar.set_description(f"zero123plus: Fitting mesh colors -Epoch {iter + 1}, Loss: {loss.item():.7f}")
+
+               
+        #MJ:  with tqdm(range(200), desc='project_back_only_texture_atla: fitting mesh colors') as pbar
+        
+        return rgb_render
+    #MJ:  self.project_back_max_z_normals(
+        #     background=None, object_mask=self.mask, z_normals=self.normals_image[:,2:3,:,:]
+        #     face_normals = self.face_normals, face_idx=self.face_idx           
+        # )
+    
+    def project_back_max_z_normals(self):
+        optimizer = torch.optim.Adam(self.mesh_model.get_params_max_z_normals(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
+                                        eps=1e-15)
+        
+        
+            
+        for v in range( len(self.thetas) ):    # scan over the 7 views 
+            #MJ: Compute the max_z_normals viewed in view v1 by comparing it with z_normals of the other views v2
+    
+            #MJ: Render the max_z_normals (self.meta_texure_img) which has been learned using the previous view z_normals
+            # At the beginning of the for loop, self.meta_texture_img is set to 0
+            
+            meta_output_v = self.mesh_model.render(theta=self.thetas[v], phi=self.phis[v], radius=self.radii[v],
+                                                background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                        use_meta_texture=True, render_cache=None)
+            render_cache_v =  meta_output_v['render_cache']
+            curr_max_z_normals_pred_v = meta_output_v['image'][:,0:1,:,:]   #MJ: meta_output['image'] is the projected meta_texture_img
+            
+            z_normals_v = meta_output_v['normals'][:,2:3,:,:]   
+        
+            #MJ: z_normals is the z component of the normal vectors of the faces seen by each view
+            z_normals_mask_v = meta_output_v['mask']   #MJ: shape = (1,1,1200,1200)
+            
+            #MJ: Try blurring the object-mask "curr_z_mask" with Gaussian blurring: 
+            # The following code is a simply  cut and paste from project-back:
+            object_mask_v = z_normals_mask_v
+            #MJ: erode the boundary of the mask
+            object_mask_v = torch.from_numpy( cv2.erode(object_mask_v[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8)) ).to(
+                                 object_mask_v.device).unsqueeze(0).unsqueeze(0)
+                                 
+            # object_mask = torch.from_numpy(
+            #     cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
+            #     object_mask.device).unsqueeze(0).unsqueeze(0)
+            # render_update_mask = object_mask.clone()
+            render_update_mask_v =  object_mask_v.clone()
+
+            #MJ: dilate the bounary of the mask
+            blurred_render_update_mask_v = torch.from_numpy(
+                 cv2.dilate(render_update_mask_v[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
+                 render_update_mask_v.device).unsqueeze(0).unsqueeze(0)
+                
+          
+            blurred_render_update_mask_v = utils.gaussian_blur(blurred_render_update_mask_v, 21, 16)
+
+            # Do not get out of the object
+            blurred_render_update_mask_v[object_mask_v == 0] = 0
+                         
+            #MJ: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True),
+            # rather than torch.tensor(sourceTensor).        
+            # max_z_normals_target = torch.tensor(curr_max_z_normals_pred)   #MJ: max_z_normals_target will refer to a copy of max_z_normals_pred
+            max_z_normals_target_v = curr_max_z_normals_pred_v.clone().detach() 
+            #MJ: Compare the curr max_z_normals and the curr_z_normals and update  max_z_normals_target
+            max_z_normals_target_v[0, 0, :, :] = torch.max(max_z_normals_target_v[0, 0, :, :], z_normals_v[0, 0, :, :])    
+            
+            self.log_train_image(torch.cat([max_z_normals_target_v, max_z_normals_target_v,max_z_normals_target_v], dim=1),
+                                f'project_back_max_z_normals:max_z_normals_target_v')
+                       
+            curr_max_z_normals_pred_v = curr_max_z_normals_pred_v *    blurred_render_update_mask_v.float()    
+            max_z_normals_target_v = max_z_normals_target_v *    blurred_render_update_mask_v.float()    
+            #MJ: z_normals: (1,1,1200,1200)                 
+                               
+            with  tqdm(range(300), desc='project_back_max_z_normals:fitting max_z_normals') as pbar:
+                for iter in pbar:
+                    optimizer.zero_grad()                   
+                                        
+                    # loss = 0
+                    # for i in range( masked_max_z_normals_pred.shape[0]):
+                    #    # Compute the mean squared error for each batch element separately                          
+                    #     view_loss =  (masked_max_z_normals_pred[i] - masked_curr_z_normals_target[i].detach()).pow(2).mean()      
+                    
+                    #     loss += view_loss #Accumulate the individual loss for each viewpoint
+                                
+                    # loss /=  masked_max_z_normals_pred.shape[0]
+                    
+                    loss_v = ( curr_max_z_normals_pred_v -   max_z_normals_target_v.detach()).pow(2).mean()      
+                              
+                                
+                    loss_v.backward() # JA: Compute the gradient vector of the loss with respect to the trainable parameters of
+                                    # the network, that is, the pixel value of the texture atlas
+                    optimizer.step()
+                    pbar.set_description(f"project_back_max_z_normals:Fitting max_z_normals -view={v}: Epoch={iter + 1}, Loss: {loss_v.item():.7f}")
+                    
+                    #MJ: Render the learned meta_texture_img to produce the new  curr_max_z_normals_pred 
+                    meta_output_v = self.mesh_model.render( background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                        use_meta_texture=True, render_cache=render_cache_v)
+                    
+                    curr_max_z_normals_pred_v = meta_output_v['image'][:,0:1,:,:]   #MJ: meta_output['image'] is the projected meta_texture_img
+            
+                    curr_max_z_normals_pred_v = curr_max_z_normals_pred_v *    blurred_render_update_mask_v.float()    
+                             
+            #End for _ in tqdm(range(300), desc='fitting max_z_normals')    
+        #End for v in range(self.thetas)    # scan over the 7 views 
+  
+                
+         
+    def compute_view_weights(self, z_normals, max_z_normals, alpha=-10.0 ):        
+        
+        """
+        Compute view weights where the weight increases exponentially as z_normals approach max_z_normals.
+        
+        Args:
+            z_normals (torch.Tensor): The tensor containing the z_normals data.
+            max_z_normals (torch.Tensor): The tensor containing the max_z_normals data.
+            alpha (float): A scaling parameter that controls how sharply the weight increases (should be negative).
+        
+        Returns:
+            torch.Tensor: The computed weights with the same shape as the input tensors (B, 1, H, W).
+        """
+        # Ensure inputs have the same shape
+        assert z_normals.shape == max_z_normals.shape, "Input tensors must have the same shape"
+        
+        # Compute the difference between max_z_normals and z_normals
+        delta = max_z_normals - z_normals
+        for i in range( delta.shape[0]):
+            print(f'min delta for view-{i}:{delta[i].min()}')
+            print(f'max  delta for view-{i}:{delta[i].max()}')
+        #MJ: delta is supposed to be greater than 0; But sometimes, z_normals is greater than max_z_normals.
+        # It means that project_back_max_z_normals() was not fully successful.
+        abs_delta = torch.abs( delta )
+        # Calculate the weights using an exponential function, multiplying by negative alpha
+        weights = torch.exp(alpha * abs_delta)  #MJ: the max value of torch.exp(alpha * delta)   will be torch.exp(alpha * 0) = 1 
+        
+        for i in range( weights.shape[0]):
+            print(f'min weights  for view-{i}:{weights[i].min()}')
+            print(f'max  weights for view-{i}:{weights[i].max()}')
+        # Normalize to have the desired shape (B, 1, H, W)
+        #weights = weights.view(weights.size(0), 1, weights.size(1), weights.size(2))
+        
+        return weights
+       
+    
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
     def log_train_image(self, tensor: torch.Tensor, name: str, colormap=False):
         if self.cfg.log.log_images:
             if colormap:
                 tensor = cm.seismic(tensor.detach().cpu().numpy())[:, :, :3]
             else: #MJ: for debugging
                 tensor = einops.rearrange(tensor, '(1) c h w -> h w c').detach().cpu().numpy()
+<<<<<<< HEAD
                # tensor = einops.rearrange(tensor, 'c h w -> h w c').detach().cpu().numpy()
             Image.fromarray((tensor * 255).astype(np.uint8)).save(
                 self.train_renders_path / f'{name}.jpg')    #MJ:    self.train_renders_path = make_path(self.exp_path / 'vis' / 'train')
+=======
+            
+            if np.any(np.isnan(tensor)) or np.any(np.isinf(tensor)):
+    #     # Raise an exception if there are any NaNs or infinite values
+    #      tensor = einops.rearrange(tensor, '(1) c h w -> h w c').detach().cpu().numpy()
+    #      Image.fromarray( (tensor * 255).astype(np.uint8) ).save('experiments'/f'debug:NanOrInf.jpg')
+
+                raise ValueError("Tensor contains NaNs or infinite values")
+            
+            Image.fromarray((tensor * 255).astype(np.uint8)).save(
+                self.train_renders_path / f'debug:{name}.jpg')
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
 
     def log_diffusion_steps(self, intermediate_vis: List[Image.Image]):
         if len(intermediate_vis) > 0:

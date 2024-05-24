@@ -603,11 +603,12 @@ class TexturedMeshModel(nn.Module):
         else:
             augmented_vertices = self.mesh.vertices
 
-        if use_median:
+        if use_median: #MJ: check if the texture_img being learned is not so different from the default magenta color
             diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
                 self.device)).abs().sum(axis=1) #MJ: self.default_color=(0.8,0.1,0.8) = magenta
             default_mask = (diff < 0.1).float().unsqueeze(0) #MJ: the mask for the background
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
+<<<<<<< HEAD
                 axis=1)  #MJ: get the median color for the non-background region:  median_color = [nan,nan,nan] ??
             #MJ: If all values in default_mask.flatten() are False (indicating that no elements are equal to 0), then the selection operation results in an empty tensor.
             # Performing any statistical operation like median on an empty tensor results in NaN values because the operation is undefined over an empty set.
@@ -615,6 +616,24 @@ class TexturedMeshModel(nn.Module):
             texture_img = texture_img.clone()
             with torch.no_grad(): #MJ: set the texture atlas with the median_color of the non-background => Use this texture map to re-render the mesh
                 texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1) #MJ: texture_img: (1,3,1024,1024)
+=======
+                axis=1)  #MJ: get the median color of the non-magenta region of texture_img
+            texture_img = texture_img.clone()
+            with torch.no_grad(): #MJ: fill the default (magenta) region of texture_img by the median color
+                texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
+                
+        #MJ:  When rendering images, having large patches of a default or placeholder color (like magenta) 
+        #  can be visually jarring and unrealistic. By filling these regions with a median color derived
+        #  from the actual textured parts of the image, the overall appearance becomes more cohesive 
+        #  and aesthetically pleasing. This helps in creating a more seamless and realistic image,
+        #  especially in contexts  where the texture details are crucial, such as in photorealistic rendering.  
+        
+        #==>
+        # Coverage Gaps: Despite the intention to cover the entire texture map with data from various 
+        # viewpoints, gaps can occur. This might be due to occlusions, insufficient viewpoint coverage,
+        # or limitations in the image processing pipeline (e.g., alignment errors or inadequate resolution). 
+        # In such cases,  some regions of the texture map may not receive any data, resulting in default color patches.     
+>>>>>>> 177114c8972206cca551eab0ae6156e378e1f8e6
         background_type = 'none'
         use_render_back = False
         if background is not None and type(background) == str: # JA: If background is a string, set it as the type

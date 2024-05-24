@@ -100,6 +100,9 @@ class OptimConfig:
     
     learn_max_z_normals: bool = True
 
+    #MJ: added by MJ
+    learn_max_z_normals: bool = True
+    alpha:               float = -100
 
 @dataclass
 class LogConfig:
