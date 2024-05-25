@@ -298,7 +298,7 @@ class StableDiffusion(nn.Module):
                    masked_latents=None):
             self.scheduler.set_timesteps(num_inference_steps)
             noise = None
-            if latents is None:
+            if latents is None: #MJ: guide image, latents, is not given
                 # Last chanel is reserved for depth
                 latents = torch.randn(
                     ( # JA: text_embeddings is a global variable of the sample inner function
@@ -306,8 +306,8 @@ class StableDiffusion(nn.Module):
                         depth_mask.shape[3]),
                     device=self.device)
                 timesteps = self.scheduler.timesteps
-            else: # JA: latents is the latent version of Q_t without noise
-                # Strength has meaning only when latents are given
+            else: # JA: latents is the latent version of Q_0
+                # Strength has meaning only when latents (as a guide image) are given
                 timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
                 latent_timestep = timesteps[:1] # JA: The first timestep; in our case, tensor([981])
                 if fixed_seed is not None:
@@ -315,16 +315,19 @@ class StableDiffusion(nn.Module):
                 noise = torch.randn_like(latents)
                 if update_mask is not None:
                     # NOTE: I think we might want to use same noise?
+                    
                     gt_latents = latents # JA: ground truth will be used to calculate the noised truth later. gt_latents refers to Q_t in latent space without noise and has a shape of (64, 64)
+                    #Let latents be random tensor when update_mask is NOT None
                     latents = torch.randn(
                         (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2],
                          depth_mask.shape[3]),
                         device=self.device)
-                else:
+                else: #MJ: update_mask == None => Add noise to the guide image, with the noise corresponding to the the first time in
+                    # the latent time schedule defined according to strength
                     latents = self.scheduler.add_noise(latents, noise, latent_timestep)
             # JA: In our experiment, the latents is a random tensor at this point
 
-            depth_mask = torch.cat([depth_mask] * 2) # JA: depth_mask is D_t (in latent space 64x64)
+            depth_mask = torch.cat([depth_mask] * 2) # JA: depth_mask is D_0 (in latent space 64x64)
 
             # print(f"zero123, azimuth: {phi}, overhead: {theta}")
 
@@ -334,6 +337,8 @@ class StableDiffusion(nn.Module):
                     mask_constraints_iters = True  # i < 20
                     is_inpaint_iter = is_inpaint_range  # and i %2 == 1
 
+                    #MJ: latents is either what is given when sample is called or computed by
+                    #    latents = self.scheduler.step(noise_pred, t, latents)['prev_sample'] # return x_prev, pred_x0
                     if is_inpaint_iter:
                         # JA: inpaint pipeline
 
@@ -355,11 +360,13 @@ class StableDiffusion(nn.Module):
                             # JA: Although there are six text embeddings, we generate 10 images because we have
                             # 10 different inpaint masks.
 
-                        # perform guidance
+                        # MJ: predict the next error to remove
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        #MJ: noise_pred will be used in 
+                        #  latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
                     else:
-                        # JA: depth pipeline
+                        # JA: depth pipeline: doing blending the latent image with the ground truth render image
 
                         if mask_constraints_iters and update_mask is not None:
                             noised_truth = self.scheduler.add_noise(gt_latents, noise, t) # JA: noised_truth is z_Q_t and gt_latents is z_Q_0 (00XX_cropped_input.jpg)
@@ -384,16 +391,23 @@ class StableDiffusion(nn.Module):
                             # # torchvision.utils.save_image(F.interpolate(original_depth_mask, size=(512, 512))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_depth_mask.png")
                             # torchvision.utils.save_image(pred_rgb_small, f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png")
 
-                            # # JA: This blend operation is executed for the traditional depth pipeline and the zero123 pipeline
-                            # latents = latents * curr_mask + noised_truth * (1 - curr_mask)
-                            # torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
+                            # JA: This blend operation is executed for the traditional depth pipeline and the zero123 pipeline
+                            # At the beginning, latents is a random tensor
+                            
+                            #MJ: The ground truth render image has the magent colar at the boundary;
+                            #This is not what is expected in my modified version; so disable blending with the gt render image
+                            #MJ: 
+                            
+                            #latents = latents * curr_mask + noised_truth * (1 - curr_mask)
+                            
+                            #torchvision.utils.save_image(self.decode_latents(latents), f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
 
-                            # debug_image_paths = [
-                            #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
-                            #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
-                            #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
-                            #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
-                            #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
+                            # debug_image_paths = [  #MJ: os.getcwd()??
+                            #     f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
+                            #     f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
+                            #     f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
+                            #     f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
+                            #     f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
                             # ]
                             # images = [Image.open(x) for x in debug_image_paths]
                             # widths, heights = zip(*(i.size for i in images))
@@ -414,7 +428,8 @@ class StableDiffusion(nn.Module):
                             #     os.remove(image_path)
                         # JA: latents is random initially
 
-                        if self.second_model_type is None or view_dir == "front":
+                        #MJ: No need to check this when using zero123plus:
+                        # if self.second_model_type is None or view_dir == "front":
                             # JA: SD 2.0 depth pipeline
 
                             # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
@@ -434,7 +449,8 @@ class StableDiffusion(nn.Module):
                             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
                             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
+                            #MJ: noise_pred will be used in 
+                            #  latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
                         else:
                             # JA: zero123 or control zero123
 
@@ -661,59 +677,61 @@ class StableDiffusion(nn.Module):
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                     else:
                         # JA: depth pipeline
+                        #MJ: no blending of the front view image with the ground truth render image;
+                        # This blending will be performed within on_step_end() together with the other view images
+                        
+                        # if mask_constraints_iters and update_mask is not None:
+                        #     noised_truth = self.scheduler.add_noise(gt_latents, noise, t) # JA: noised_truth is z_Q_t and gt_latents is z_Q_0 (00XX_cropped_input.jpg)
+                        #     # JA: update_mask and check_mask are used in both the inpainting and depth pipelines
+                        #     # This implements formula 2 of the paper.
+                        #     if check_mask is not None and i < int(len(timesteps) * check_mask_iters):
+                        #         curr_mask = check_mask
+                        #     else:
+                        #         curr_mask = update_mask # JA: update_mask means "refine" in the paper
 
-                        if mask_constraints_iters and update_mask is not None:
-                            noised_truth = self.scheduler.add_noise(gt_latents, noise, t) # JA: noised_truth is z_Q_t and gt_latents is z_Q_0 (00XX_cropped_input.jpg)
-                            # JA: update_mask and check_mask are used in both the inpainting and depth pipelines
-                            # This implements formula 2 of the paper.
-                            if check_mask is not None and i < int(len(timesteps) * check_mask_iters):
-                                curr_mask = check_mask
-                            else:
-                                curr_mask = update_mask # JA: update_mask means "refine" in the paper
+                        #     # JA: This corresponds to the formula 1 of the equation paper.
+                        #     # z_i ← z_i * m_blended + z_Q_t * (1 − m_blended)
+                        #     # m_blended is curr_mask, which indicates the fill-in/inpaint location
+                        #     # (1 - curr_mask) is the background
+                        #     # On the right side, the latents is the random tensor and the noised_truth is the ground
+                        #     # truth with some noise. latents now refers to the image being denoised and plays the role of
+                        #     # x in apply_model.
 
-                            # JA: This corresponds to the formula 1 of the equation paper.
-                            # z_i ← z_i * m_blended + z_Q_t * (1 − m_blended)
-                            # m_blended is curr_mask, which indicates the fill-in/inpaint location
-                            # (1 - curr_mask) is the background
-                            # On the right side, the latents is the random tensor and the noised_truth is the ground
-                            # truth with some noise. latents now refers to the image being denoised and plays the role of
-                            # x in apply_model.
+                        #     # torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png")
+                        #     # torchvision.utils.save_image(self.decode_latents(noised_truth), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png")
+                        #     # torchvision.utils.save_image(F.interpolate(curr_mask, size=(image_size, image_size))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png")
+                        #     # # torchvision.utils.save_image(F.interpolate(original_depth_mask, size=(512, 512))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_depth_mask.png")
+                        #     # torchvision.utils.save_image(pred_rgb_small, f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png")
 
-                            torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png")
-                            torchvision.utils.save_image(self.decode_latents(noised_truth), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png")
-                            torchvision.utils.save_image(F.interpolate(curr_mask, size=(image_size, image_size))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png")
-                            # torchvision.utils.save_image(F.interpolate(original_depth_mask, size=(512, 512))[0], f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_depth_mask.png")
-                            torchvision.utils.save_image(pred_rgb_small, f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png")
+                        #     # JA: This blend operation is executed for the traditional depth pipeline and the zero123 pipeline
+                        #     latents = latents * curr_mask + noised_truth * (1 - curr_mask)
+                        #     # torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
 
-                            # JA: This blend operation is executed for the traditional depth pipeline and the zero123 pipeline
-                            latents = latents * curr_mask + noised_truth * (1 - curr_mask)
-                            torchvision.utils.save_image(self.decode_latents(latents), f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
+                        #     # debug_image_paths = [
+                        #     #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
+                        #     #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
+                        #     #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
+                        #     #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
+                        #     #     f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
+                        #     # ]
+                        #     # images = [Image.open(x) for x in debug_image_paths]
+                        #     # widths, heights = zip(*(i.size for i in images))
 
-                            debug_image_paths = [
-                                f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_before.png",
-                                f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_pred_rgb_512.png",
-                                f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_noised_truth.png",
-                                f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_curr_mask.png",
-                                f"./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png"
-                            ]
-                            images = [Image.open(x) for x in debug_image_paths]
-                            widths, heights = zip(*(i.size for i in images))
+                        #     # total_width = sum(widths)
+                        #     # max_height = max(heights)
 
-                            total_width = sum(widths)
-                            max_height = max(heights)
+                        #     # new_im = Image.new('RGB', (total_width, max_height))
 
-                            new_im = Image.new('RGB', (total_width, max_height))
+                        #     # x_offset = 0
+                        #     # for im in images:
+                        #     #     new_im.paste(im, (x_offset,0))
+                        #     #     x_offset += im.size[0]
 
-                            x_offset = 0
-                            for im in images:
-                                new_im.paste(im, (x_offset,0))
-                                x_offset += im.size[0]
+                        #     # new_im.save(f'./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}.png')
 
-                            new_im.save(f'./texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}.png')
-
-                            for image_path in debug_image_paths:
-                                os.remove(image_path)
-                        # JA: latents is random initially
+                        #     # for image_path in debug_image_paths:
+                        #     #     os.remove(image_path)
+                        # # JA: latents is random initially
 
                         if self.second_model_type is None or view_dir == "front":
                             # JA: SD 2.0 depth pipeline

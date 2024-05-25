@@ -6,7 +6,9 @@ guide:
   shape_path: shapes/human.obj
   guidance_scale: 10
   use_zero123plus: True
+  num_denoising_steps:  200
+  interleave_mode:     False
 optim:
-  seed: 100
+  seed: 300
   learn_max_z_normals: True
-  alpha:               -10
+  alpha:               -1000

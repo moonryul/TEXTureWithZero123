@@ -5,7 +5,9 @@ guide:
   append_direction: True
   shape_path: shapes/napoleon.obj
   use_zero123plus: True
+  num_denoising_steps:  100
+  interleave_mode:     False
 optim:
-  seed: 0
+  seed: 150
   learn_max_z_normals: True
-  alpha:               -10
+  alpha:               -1000

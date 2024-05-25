@@ -610,8 +610,46 @@ class TexturedMeshModel(nn.Module):
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
                 axis=1)  #MJ: get the median color of the non-magenta region of texture_img
             texture_img = texture_img.clone()
+            #MJ: The variable texture_img is updated to point to this new cloned tensor, not the original tensor.
+            # The original tensor that texture_img initially pointed to is now no longer referenced by this variable. 
+            
+            #MJ:This creates a new tensor that has the same data as texture_img but is a completely separate object. 
+            # Any modifications to the cloned tensor do not affect the original tensor.
+            # To summarize, cloning a tensor does not automatically transfer its status as a trainable parameter. The cloned tensor needs explicit registration
+            # for it to be included in the model's training processes.       
+                 
+            # y = x.clone(): While y copies the data from x, it does not copy x's gradient function
+            # (grad_fn). Thus, y is treated as a leaf node in the computational graph 
+            #  
+            # Gradient Propagation: If you use y in subsequent operations, it will accumulate gradients
+            # from those operations as part of a new computational graph, but these gradients will not flow back to x because y was created 
+            # as a leaf node and lacks a grad_fn linking it back to x.
+                       
+            # z = x.detach(): z is a new tensor that looks exactly like x but is completely removed
+            # from the computational graph. 
+            # Use .detach() when: You want to use the tensor for operations that should not affect 
+            # gradient calculations, such as during evaluation or for intermediate computations 
+            # where gradient tracking is unnecessary.
+            # Changes to the detached tensor that are in-place will reflect on the original tensor
+            # due to shared storage.
+             
             with torch.no_grad(): #MJ: fill the default (magenta) region of texture_img by the median color
                 texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
+           # a tensor with requires_grad=False is not part of the computational graph for gradient computations. 
+           # Create a tensor that requires gradients
+            # x = torch.randn(3, requires_grad=True)
+
+            # # Operations within torch.no_grad()
+            # with torch.no_grad():
+            #     y = x * 2
+            #     print("Inside torch.no_grad():")
+            #     print("y.requires_grad:", y.requires_grad)  # This prints False, y does not track gradients
+
+            # # y retains requires_grad=False outside the block
+            # print("Outside torch.no_grad():")
+            # print("y.requires_grad:", y.requires_grad)  # Still False
+
+     
                 
         #MJ:  When rendering images, having large patches of a default or placeholder color (like magenta) 
         #  can be visually jarring and unrealistic. By filling these regions with a median color derived
