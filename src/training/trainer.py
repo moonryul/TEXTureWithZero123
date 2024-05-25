@@ -461,12 +461,13 @@ class TEXTure:
            # So the magenta part is replaced by the median color of the learned part of the texture map
               
         #MJ: prepare the front view image
+        front_image_rgba = torch.cat((front_image, object_mask_front), dim=1)
         min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(object_mask_front[0, 0])
         crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
-        cropped_front_image = crop(front_image)
+        cropped_front_image_rgba = crop(front_image_rgba)
         
         self.log_train_image(front_image, 'paint_zero123plus:front_image')
-        self.log_train_image(cropped_front_image, 'paint_zero123plus:cropped_front_image')
+        self.log_train_image(cropped_front_image_rgba[:, 0:3], 'paint_zero123plus:cropped_front_image')
 
         # masks = self.outputs['mask']
         # bounding_boxes = utils.get_nonzero_region_vectorized( masks )    
@@ -487,8 +488,7 @@ class TEXTure:
         self.object_mask = self.outputs['mask']
         depth_rgba = torch.cat((depth, depth, depth, self.object_mask), dim=1)
 
-        front_image_rgba = torch.cat( [ front_image,  object_mask_front], dim=1) 
-         
+                
         #self.bounding_boxes = utils.get_nonzero_region_vectorized( self.object_mask )
         #MJ: depth_rgba.shape:depth_rgba.shape: torch.Size([7, 4, 1200, 1200]) => Do the following for debugging
         B, C, H, W =  self.object_mask.shape 
@@ -512,6 +512,8 @@ class TEXTure:
         min_h, min_w, max_h, max_w = utils.get_nonzero_region_tuple(object_mask_front) #MJ: outputs["mask"][0, 0]: shape (1,1,H,W)
         crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
         cropped_front_image_rgba = crop(front_image_rgba)
+        
+        cropped_front_image = crop(front_image)
         # max_cropped_image_height = max([box[2] - box[0] for box in self.bounding_boxes])
         # max_cropped_image_width = max([box[3] - box[1] for box in self.bounding_boxes])
         #MJ:  bounding_boxes[i, :] = torch.tensor([min_h, min_w, max_h, max_w])   
@@ -626,6 +628,7 @@ class TEXTure:
         # JA: Zero123++ was trained with 320x320 images: https://github.com/SUDO-AI-3D/zero123plus/issues/70
         cond_image = torchvision.transforms.functional.to_pil_image(cropped_front_image_rgba[0]).resize((320, 320))
         depth_image = torchvision.transforms.functional.to_pil_image(cropped_depth_rgba_grid[0]).resize((640, 960))
+ 
 
         masks_latent_list =[]
         for i in range( len(self.thetas) ):
