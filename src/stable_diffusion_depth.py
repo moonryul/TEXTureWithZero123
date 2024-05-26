@@ -398,7 +398,7 @@ class StableDiffusion(nn.Module):
                             #This is not what is expected in my modified version; so disable blending with the gt render image
                             #MJ: 
                             
-                            #latents = latents * curr_mask + noised_truth * (1 - curr_mask)
+                            latents = latents * curr_mask + noised_truth * (1 - curr_mask)
                             
                             #torchvision.utils.save_image(self.decode_latents(latents), f"{os.getcwd()}/texture_test/{round(math.degrees(phi))}_{round(math.degrees(theta))}_{i}_latents_after.png")
 
