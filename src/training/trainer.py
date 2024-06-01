@@ -234,6 +234,9 @@ class TEXTure:
         ), conditioning_scale=2)
 
         pipeline.to(self.device)
+        
+        #MJ: check what schedulers are compatible with the zero123plus pipeline
+        print(f'The compatible schedulers for the zero123plus:{pipeline.scheduler.compatibles}')
 
         return pipeline
 
@@ -534,7 +537,7 @@ class TEXTure:
             torch.cat((masks_latent_list[1], masks_latent_list[4]), dim=3),
             torch.cat((masks_latent_list[2], masks_latent_list[5]), dim=3),
             torch.cat((masks_latent_list[3], masks_latent_list[6]), dim=3),
-        ), dim=2)
+        ), dim=2) #MJ: masks_grid is the mask based on the diff map from the default magenta texture map
 
         # JA: the Zero123++ pipeline converts the latent space tensor z into pixel space
         # tensor x in the following manner:
@@ -550,7 +553,9 @@ class TEXTure:
             return_dict=False
         )[0].sample() * self.zero123plus.vae.config.scaling_factor 
 
-        gt_renders_latent_allviews = scale_latents(scaled_latent_renders_grid)
+        #MJ: gt_renders_latent_allviews = scale_latents(scaled_latent_renders_grid)
+        gt_renders_latent_grid = scale_latents(scaled_latent_renders_grid)
+
 
         self.log_train_image(cropped_depth_grid[:, 0:3], 'cropped_depth_grid')
         self.log_train_image(cropped_rgb_renders_grid, 'cropped_rgb_renders_grid')
@@ -570,20 +575,44 @@ class TEXTure:
         elapsed_time = zero123plus_prep_end_time - zero123plus_prep_start_time
         print(f'zero123plus_prep_time={elapsed_time:0.4f}')
 
-        self.previous_grid_latent = None
-        self.zero123plus_unet = self.zero123plus.unet
+        #MJ: self.previous_grid_latent = None
+        #self.previous_grid_latent  = torch.randn_like(gt_renders_latent_grid)
+        #self.zero123plus_unet = self.zero123plus.unet
 
-        self.should_inpaint = False
+       
+        #MJ: self.should_inpaint = False
+      
+        masked_input_latents =  gt_renders_latent_grid * (masks_grid < 0.5) + 0.5 * (masks_grid >= 0.5) 
+        #MJ: masks_grid is the mask based on the diff map from the default magenta texture map: 
+        # It causes the valid generated part of the texture map learned from the front view image kept intact 
+        
+        self.zero123plus.masked_input_latents = masked_input_latents
+        self.zero123plus.masks_grid = masks_grid
+        self.zero123plus.inpaint_unet = self.diffusion.inpaint_unet
 
         @torch.enable_grad
         def on_step_end(pipeline, iter, t, callback_kwargs):
             grid_latent = callback_kwargs["latents"] # JA: grid_latent is z_{t-1}, that is, z_{t_prev}
 
-            if t == pipeline.scheduler.timesteps[-1]: # JA: If t is equal to the last time point, which is 0
-                # JA: At this moment when on_step_end is called, latent is equal to z_{t-1} (z_{iter + 1})
-                noised_cropped_rgb_renders_grid = gt_renders_latent_allviews
-            elif iter >= 10 and iter < 20 and iter % 2 == 1 and self.should_inpaint:
-                grid_latent = self.previous_grid_latent
+            #MJ: The following time check is moved withinthe condition which does the blending operation
+            # if t == pipeline.scheduler.timesteps[-1]: # JA: If t is equal to the last time point, which is 0
+            #     # JA: At this moment when on_step_end is called, latent is equal to z_{t-1} (z_{iter + 1})
+            #     #MJ: noised_cropped_rgb_renders_grid = gt_renders_latent_allviews
+            #     noised_cropped_rgb_renders_grid = gt_renders_latent_grid
+                
+            # elif iter >= 10 and iter < 20 and iter % 2 == 1 and self.should_inpaint: #MJ: In this case, perform inpainting;
+            #Note that when you perform inpainting, you do not perform the blending operation
+            if iter >= 10 and iter < 20 and iter % 2 == 1 and self.should_inpaint: #MJ: In this case, perform inpainting
+                
+                #  When doing inpainting, ignore the current zero123plus denoising, and go back to the
+                #  previous latent and apply the inpainting to it. 
+                pipeline.scheduler._step_index -= 1  
+                
+
+                
+                grid_latent = self.previous_grid_latent  
+                #MJ: self.previous_grid_latent is None initially? No. when iter > 10, it is set to 
+                #   self.previous_grid_latent = callback_kwargs["latents"]
 
                 # JA: At every iteration, pipeline.scheduler.step is called which increments the _step_index
                 # value by 1. Since this ad-hoc approach allows denoising in every step but we end up discarding
@@ -591,18 +620,41 @@ class TEXTure:
                 # technically calling pipeline.scheduler.step twice on each of these iteration steps. This
                 # requires us to manually decrement the _step_index value to undo the incrementation done for
                 # the discarded denoised latent.
-                pipeline.scheduler._step_index -= 1
+                
+                
+                # pipeline.scheduler._step_index -= 1  
+                # #MJ: When doing inpainting, ignore the current zero123plus denoising, and go back to the
+                # # previous latent and apply the inpainting to it. 
 
-                masked_latents = grid_latent * (masks_grid < 0.5) + 0.5 * (masks_grid >= 0.5)
+                #MJ masked_input_latents = grid_latent * (masks_grid < 0.5) + 0.5 * (masks_grid >= 0.5)
+                #masked_input_latents is the latent version of the clean ground truth render image, not of the latent being denoised
+                masked_input_latents =  gt_renders_latent_grid * (masks_grid < 0.5) + 0.5 * (masks_grid >= 0.5) 
+                #MJ: masks_grid is the mask based on the diff map from the default magenta texture map: 
+                # It causes the valid generated part of the texture map learned from the front view image kept intact 
 
+                #MJ: doubles the "batch size" of the input tensors grid_latent, masks_grid, masked_input_latents, for classifier-free guidance
                 latent_model_input_inpaint = torch.cat(
-                    [torch.cat([grid_latent, masks_grid, masked_latents], dim=1)] * 2
+                    [   torch.cat([grid_latent, masks_grid, masked_input_latents], dim=1)  ] * 2
                 ).half()
 
+
+                #MJ:the U-Net predicts the noise in the image, which is then subtracted by the scheduler.
                 with torch.no_grad():
+                    # cf: https://forums.fast.ai/t/lesson-10-official-topic/101171/147?page=8
+                    #MJ: scale the variance of the input to make the K-LMS algorithm work.
+                    #https://10maurycy10.github.io/misc/implementing_stable_diffusion/
+                    # A theory of k-diffusion: https://isamu-website.medium.com/understanding-k-diffusion-from-their-research-paper-and-source-code-55ae4aa802f
+                    # => Now, what the authors propose next is, given this basic idea, why don’t we find the differential equation of x with respect to time?
+                    #=>  The choice of sampling is “largely independent of the other components,
+                    # such as network architecture and training details” so theoretically, 
+                    # you can use stable diffusion that is not trained for k diffusion but still use their sampler. 
+                    # In fact, they consider the denoiser, D, to be a black box.
+                    
+                    
+                    # https://www.reddit.com/r/StableDiffusion/comments/zl6rtj/schedulers_compared/      
                     noise_pred_inpaint = self.diffusion.inpaint_unet(
                         latent_model_input_inpaint,
-                        pipeline.scheduler.timesteps[iter + 1][None],
+                        pipeline.scheduler.timesteps[iter + 1][None], #MJ: mix the unet and the scheduler?
 
                         # JA: Assuming append_direction is set to True, this will (erroneously) append the text embedding
                         # that corresponds to the front view (i.e. the text embedding like "a picture of spiderman, front
@@ -611,7 +663,8 @@ class TEXTure:
                         encoder_hidden_states=self.text_z[0].half()
                     )['sample']
                     noise_pred = noise_pred_inpaint
-
+                #End with torch.no_grad()
+                
                 # JA: The guidance_scale config value is a leftover characteristic of the TEXTure code. It refers to the
                 # guidance scale used in the interleaved depth and inpainting pipelines of TEXTure. This is not to be
                 # confused with pipeline.guidance_scale, which is the guidance scale of the Zero123++ pipeline.
@@ -619,62 +672,82 @@ class TEXTure:
 
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                
+                #MJ: A good review of schedulers: https://www.reddit.com/r/StableDiffusion/comments/x4zs1r/comparison_between_different_samplers_in_stable/
+                # k_lms is sampling with linear multi-step method (4th-order Adams-Bashforth, first step 1st order Euler, second step 2nd order Heun, etc. till 4th step, 
+                # then subsequently depending on the past 4 steps) of the DDIM probability flow ODE
 
-                latents = pipeline.scheduler.step(
+                prev_grid_latent = pipeline.scheduler.step(  #MJ: pipeline refers to zero123plus: why do you use the scheduler of zero123plus for sd2 inpainting ?
                     noise_pred,
-                    pipeline.scheduler.timesteps[iter + 1][None],
+                    pipeline.scheduler.timesteps[iter + 1][None], #MJ: timesteps is not actually used within scheduler.step but self.step_index is
                     grid_latent
                 )['prev_sample']
+                
+                
+                callback_kwargs["latents"] = prev_grid_latent.half()
 
-                # latents = self.diffusion.encode_imgs(cropped_rgb_renders_grid)
-                noises_latent = torch.randn_like(grid_latent)
-                noised_cropped_rgb_renders_grid = pipeline.scheduler.add_noise(
-                    latents,
-                    noises_latent,
-                    pipeline.scheduler.timesteps[iter + 1][None]
-                )
-            else:
+                self.previous_grid_latent = callback_kwargs["latents"]
+
+                return callback_kwargs
+            
+            else: #MJ ;NOT ( iter >= 10 and iter < 20 and iter % 2 == 1 and self.should_inpaint )
+                  #MJ: In this case, perform blending the latent with the noisy version of the ground truth render image
+                  
                 # MJ: Noisify the GT rendered image at the same noise level as the latent  in the latent space
-                noises_latent = torch.randn_like(grid_latent)
-                noised_cropped_rgb_renders_grid = pipeline.scheduler.add_noise(
-                    gt_renders_latent_allviews,
-                    noises_latent,
-                    pipeline.scheduler.timesteps[iter + 1][None]
-                )
+                
+                if t == pipeline.scheduler.timesteps[-1]: # JA: If t is equal to the last time point, which is 0
+                # JA: At this moment when on_step_end is called, latent is equal to z_{t-1} (z_{iter + 1})
+                #MJ: noised_cropped_rgb_renders_grid = gt_renders_latent_allviews
+                   noised_cropped_rgb_renders_grid = gt_renders_latent_grid
+                else:    
+                    noises_latent = torch.randn_like(grid_latent)
+                    noised_cropped_rgb_renders_grid = pipeline.scheduler.add_noise(
+                        #gt_renders_latent_allviews, MJ: replaced by the following line
+                        gt_renders_latent_grid,
+                        noises_latent,
+                        pipeline.scheduler.timesteps[iter + 1][None]
+                    )
 
-            #MJ: In TEXTure, the latent image generated by the text-to-image pipeline from a given viewpoint
-            # is blended/inpainted with the image rendered from the mesh from that viewpoint using the currently learned 
-            # texture atlas. This blended latent is used as the input to the next step of denoising.
-            # This enforces the generated image to align with the correct image rendered using the correct part of the 
-            # texture atlas corresponding to the front viewpoint.  The texture atlas is partly learned from the front view image.
-            # 
-            # In a new viewpoint, when the image rendered using the partly learned texture atlas 
-            # may contain the part which is rendered from the part of the texture atlas with the
-            # initial magenta color. If so, it means that for this part, the image should be generated by the generation
-            # pipeline. That is, if the newly rendered image is not different from the default texture color, 
-            # it is taken to mean that the new region should be painted by the generated image.isidentifier()
-            # But, the new region should be well-aligned with the part that is already valid; This part is
-            # considered as the background in the context of inpainting.
-            blended_grid_latent = (grid_latent * masks_grid + noised_cropped_rgb_renders_grid * (1 - masks_grid))
+                #MJ: In TEXTure, the latent image generated by the text-to-image pipeline from a given viewpoint
+                # is blended/inpainted with the image rendered from the mesh from that viewpoint using the currently learned 
+                # texture atlas. This blended latent is used as the input to the next step of denoising.
+                # This enforces the generated image to align with the correct image rendered using the correct part of the 
+                # texture atlas corresponding to the front viewpoint.  The texture atlas is partly learned from the front view image.
+                # 
+                # In a new viewpoint, when the image rendered using the partly learned texture atlas 
+                # may contain the part which is rendered from the part of the texture atlas with the
+                # initial magenta color.  That is, if the newly rendered image is not different from the default texture color, 
+                # it is taken to mean that the new region should be painted by the generated image.
+                # But, the new region should be well-aligned with the part that is already valid; This part is
+                # considered as the background in the context of inpainting.
+                
+                #MJ: Blending is performed only when the denoising step uses the depth pipeline, not the inpaint pipeline
+                blended_grid_latent = (grid_latent * masks_grid + noised_cropped_rgb_renders_grid * (1 - masks_grid))
 
-            callback_kwargs["latents"] = blended_grid_latent.half()
+                callback_kwargs["latents"] = blended_grid_latent.half()
 
-            self.previous_grid_latent = callback_kwargs["latents"]
-
-            return callback_kwargs
-        
+                self.previous_grid_latent = callback_kwargs["latents"]
+                
+             
+                return callback_kwargs
+            #End else of NOT ( iter >= 10 and iter < 20 and iter % 2 == 1 and self.should_inpaint )
+            
         #End  def on_step_end(pipeline, i, t, callback_kwargs) 
         # JA: Here we call the Zero123++ pipeline
 
         zero123_start_time = time.perf_counter()  # Record the end time
         
+        #JA: About creating prompt self.text_string:
+        #  remove append_direction: True and , {} view from the text prompt. 
+        # As you can see in the newest change, I made it so that when calling paint_viewpoint it exclusively adds , front view to the prompt (e.g. this would make the prompt look like a picture of Napoleon Bonaparte, front view), and leaves this text out of the prompt when giving it to zero123++
+        # (e.g. this would make the prompt look like a picture of Napoleon Bonaparte).
         #MJ: Generate a 3x2 grid image conditioned on the front view image and the 6 depth maps of the mesh
         result = self.zero123plus(
             cond_image,
-            prompt=self.text_string[0],
+            prompt=self.text_string[0],  #== "a picture of Napoleon Bonaparte", e.g.
             depth_image=depth_image,
-            num_inference_steps=50,
-            callback_on_step_end=on_step_end
+            num_inference_steps=50
+           # callback_on_step_end=on_step_end
         ).images[0]
         #MJ: return image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
 
