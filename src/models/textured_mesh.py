@@ -126,7 +126,9 @@ class TexturedMeshModel(nn.Module):
         self.renderer = Renderer(device=self.device, dim=self.dim,
                                  interpolation_mode=self.opt.texture_interpolation_mode, fovyangle=fovyangle)
         self.env_sphere, self.mesh = self.init_meshes()
+        #MJ: debugging
         self.default_color = [0.8, 0.1, 0.8] # JA: This is the magenta color, set to the texture atlas
+        #self.default_color = [0.5, 0.5, 0.5] #MJ: change the default texture color from magenta to gray 
         self.background_sphere_colors, self.texture_img = self.init_paint() # JA: self.texture_img is a learnable parameter
         self.meta_texture_img = nn.Parameter(torch.zeros_like(self.texture_img)) # JA: self.texture_img is the texture atlas
                                 # define self.meta_texture_img variable to be the parameter of the neural network whose init
@@ -606,7 +608,8 @@ class TexturedMeshModel(nn.Module):
         if use_median: #MJ: check if the texture_img being learned is not so different from the default magenta color
             diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
                 self.device)).abs().sum(axis=1)
-            default_mask = (diff < 0.1).float().unsqueeze(0)
+            #MJdefault_mask = (diff < 0.1).float().unsqueeze(0)
+            default_mask = (diff < 0.001).float().unsqueeze(0)
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
                 axis=1)  #MJ: get the median color of the non-magenta region of texture_img
             texture_img = texture_img.clone()

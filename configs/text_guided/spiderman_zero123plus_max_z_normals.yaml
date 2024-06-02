@@ -5,8 +5,11 @@ guide:
   append_direction: False
   shape_path: shapes/human.obj
   guidance_scale: 10
+  use_inpainting: False
+  use_blending:   False
   use_zero123plus: True
+  interleave_mode: False
 optim:
   seed: 100
   learn_max_z_normals: True
-  alpha:               -10
+  alpha:               -1

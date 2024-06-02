@@ -67,6 +67,7 @@ class GuideConfig:
     guidance_scale: float = 7.5
     # Use inpainting in relevant iterations
     use_inpainting: bool = True
+    use_blending: bool = True
     # The texture before editing
     reference_texture: Optional[Path] = None
     # The edited texture
@@ -79,6 +80,8 @@ class GuideConfig:
     z_update_thr: float = 0.2
     # Some more strict masking for projecting back
     strict_projection: bool = True
+    
+    interleave_mode: bool = False
 
 
 @dataclass
