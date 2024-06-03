@@ -71,8 +71,9 @@ class StableDiffusion(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(
             self.device)
 
-        if self.use_inpaint:
-            self.inpaint_unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-inpainting",
+       #MJ: if self.use_inpaint: Create inpaint_unet whether the sd uses  it or not, because it will be also used in
+       #zero123plus denoising loop
+        self.inpaint_unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-inpainting",
                                                                      subfolder="unet", use_auth_token=self.token, torch_dtype=torch.float16).to(
                 self.device)
 
@@ -413,11 +414,11 @@ class StableDiffusion(nn.Module):
             return latents
         # JA: end of sample function
 
-        if True: #self.second_model_type is None or view_dir == "front":
-            image_size = 512
-        else:
-            image_size = 256 # JA: We use image size of 256 when producing the image from non-front views using zero123 or control zero123
-
+        # if True: #self.second_model_type is None or view_dir == "front":
+        #     image_size = 512
+        # else:
+        #     image_size = 256 # JA: We use image size of 256 when producing the image from non-front views using zero123 or control zero123
+        image_size = 512
         depth_mask = F.interpolate(original_depth_mask, size=(image_size // 8, image_size // 8), mode='bicubic',
                                    align_corners=False) # JA: original_depth_mask is D_t (in pixel space) and has a shape of (827, 827) and is a nonzero region of the depth image
         masked_latents = None
@@ -442,6 +443,11 @@ class StableDiffusion(nn.Module):
             #          posterior = self.vae.encode(imgs).latent_dist
             #          latents = posterior.sample() * 0.18215
 
+            #MJ: The original TEXTure:
+            # if self.use_inpaint:
+            #     update_mask_512 = F.interpolate(update_mask, (512, 512))
+            #     masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
+            #     masked_latents = self.encode_imgs(masked_inputs)
             if self.use_inpaint:
                 update_mask_small = F.interpolate(update_mask, (image_size, image_size))
                 masked_inputs = pred_rgb_small * (update_mask_small < 0.5) + 0.5 * (update_mask_small >= 0.5)

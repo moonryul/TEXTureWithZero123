@@ -66,8 +66,10 @@ class GuideConfig:
     # Guidance scale for score distillation
     guidance_scale: float = 7.5
     # Use inpainting in relevant iterations
-    use_inpainting: bool = True
-    use_blending: bool = True
+    use_sd_inpaint: bool = False
+    use_sd_blending: bool = True
+    zero123plus_use_inpaint: bool = False 
+    zero123plus_use_blending: bool = True 
     # The texture before editing
     reference_texture: Optional[Path] = None
     # The edited texture
