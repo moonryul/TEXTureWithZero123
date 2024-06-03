@@ -409,12 +409,12 @@ class TEXTure:
         frontview_data = next(frontview_data_iter)  # Gets the first batch
                                         
         #MJ: Use blending to create the front view image (blending with the object_mask)
-        if self.cfg.guide.use_sd_blending:
+        if self.cfg.guide.sd_blending:
             self.diffusion.use_blending = True
         else:
             self.diffusion.use_blending = False
             
-        if self.cfg.guide.use_sd_inpaint:
+        if self.cfg.guide.sd_inpaint:
             self.diffusion.use_inpaint = True
         else:
             self.diffusion.use_inpaint = False
@@ -619,15 +619,7 @@ class TEXTure:
         self.zero123plus.inpaint_unet = self.diffusion.inpaint_unet
         self.zero123plus.gt_renders_latent_grid = gt_renders_latent_grid
         
-        if self.cfg.guide.zero123plus_use_inpaint:
-           self.zero123plus.use_inpaint = True #MJ: inpainting within zero123plus is not beneficial
-        else:
-           self.zero123plus.use_inpaint = False
-        
-        if self.cfg.guide.zero123plus_use_blending:       
-           self.zero123plus.use_blending = True #MJ: do not use blending for debugging. The zero123plus does not seem to generate correct 3x2 image
-        else:
-            self.zero123plus.use_blending = True
+       
         @torch.enable_grad
         def on_step_end(pipeline, iter, t, callback_kwargs):
             #MJ: on_step_end() does a post-processing after each denoising step:
@@ -711,6 +703,16 @@ class TEXTure:
         # As you can see in the newest change, I made it so that when calling paint_viewpoint it exclusively adds , front view to the prompt (e.g. this would make the prompt look like a picture of Napoleon Bonaparte, front view), and leaves this text out of the prompt when giving it to zero123++
         # (e.g. this would make the prompt look like a picture of Napoleon Bonaparte).
         #MJ: Generate a 3x2 grid image conditioned on the front view image and the 6 depth maps of the mesh
+        if self.cfg.guide.zero123plus_inpaint:
+           self.zero123plus.use_inpaint = True #MJ: inpainting within zero123plus is not beneficial
+        else:
+           self.zero123plus.use_inpaint = False
+        
+        if self.cfg.guide.zero123plus_blending:       
+           self.zero123plus.use_blending = True #MJ: do not use blending for debugging. The zero123plus does not seem to generate correct 3x2 image
+        else:
+            self.zero123plus.use_blending = False
+        
         result = self.zero123plus(
             cond_image,
             prompt=self.text_string[0],  #== "a picture of Napoleon Bonaparte", e.g.
@@ -856,8 +858,13 @@ class TEXTure:
 
         if save_as_video:
             all_preds = np.stack(all_preds, axis=0)
-
-            dump_vid = lambda video, name: imageio.mimsave(save_path / f"eval:constructed_video:{name}_{self.cfg.optim.alpha}.mp4", video,
+            file_suffix = "max_z_normals_" + str(int(self.cfg.optim.alpha)) if self.cfg.optim.learn_max_z_normals else "view_masks"
+            
+            file_suffix = file_suffix + "_sd_blend" if self.cfg.guide.sd_blending else ""
+            file_suffix = file_suffix + "_zero123_blend" if self.cfg.guide.zero123plus_blending else "" 
+            file_suffix = file_suffix + "_sd_inpaint" if self.cfg.guide.sd_inpaint else ""
+            file_suffix = file_suffix + "_zero123_inpaint" if self.cfg.guide.zero123plus_inpaint else ""
+            dump_vid = lambda video, name: imageio.mimsave(save_path / f"eval:constructed_video:{name}_{file_suffix}.mp4", video,
                                                            fps=25,
                                                            quality=8, macro_block_size=1)
 
