@@ -67,28 +67,47 @@ class Renderer:
         # To handle operations for masked regions, we need to use masked operations
         # Set default min and max values to avoid affecting the normalization
         masked_depth_maps = torch.where(object_mask, depth_maps, torch.tensor(float('inf')).to(depth_maps.device))
-        min_depth = masked_depth_maps.amin(dim=(1, 2), keepdim=True)[0]
+        min_depth = masked_depth_maps.amin(dim=(1, 2), keepdim=True)
 
         masked_depth_maps = torch.where(object_mask, depth_maps, torch.tensor(-float('inf')).to(depth_maps.device))
-        max_depth = masked_depth_maps.amax(dim=(1, 2), keepdim=True)[0]
+        max_depth = masked_depth_maps.amax(dim=(1, 2), keepdim=True)
 
-        # Replace 'inf' with zeros in cases where no valid object pixels are found
-        min_depth[min_depth == float('inf')] = 0
-        max_depth[max_depth == -float('inf')] = 0
+        # # Replace 'inf' with zeros in cases where no valid object pixels are found
+        # min_depth[min_depth == float('inf')] = 0
+        # max_depth[max_depth == -float('inf')] = 0
 
         range_depth = max_depth - min_depth
-        # Prevent division by zero
-        range_depth[range_depth == 0] = 1
+        # # Prevent division by zero
+        # range_depth[range_depth == 0] = 1
 
         # Calculate normalized depth maps
         min_val = 0.5
         normalized_depth_maps = torch.where(
             object_mask,
             ((1 - min_val) * (depth_maps - min_depth) / range_depth) + min_val,
-            torch.zeros_like(depth_maps)
+            depth_maps
         )
 
         return normalized_depth_maps
+    
+    #MJ: The above code is equivalent to the following loop:
+    
+    # Initialize a tensor for the normalized depth maps
+ #normalized_depth_maps = torch.zeros_like(depth_maps)
+
+# Loop through each element in the tensor
+# for b in range(B):
+#     for h in range(H):
+#         for w in range(W):
+#             if object_mask[b, h, w, 0]:  # Access mask at specific location
+#                 # If the object mask is True, normalize the depth map value
+#                 normalized_depth_maps[b, h, w, 0] = (
+#                     (1 - min_val) * (depth_maps[b, h, w, 0] - min_depth[b, 0, 0, 0]) / range_depth[b, 0, 0, 0]
+#                 ) + min_val
+#             else:
+#                 # If the object mask is False, keep the original depth map value
+#                 normalized_depth_maps[b, h, w, 0] = depth_maps[b, h, w, 0]
+
 
     def render_single_view(self, mesh, face_attributes, elev=0, azim=0, radius=2, look_at_height=0.0,calc_depth=True,dims=None, background_type='none'):
         dims = self.dim if dims is None else dims

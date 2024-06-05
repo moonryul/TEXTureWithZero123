@@ -12,7 +12,8 @@ guide:
 
   zero123plus_inpaint:  False 
   zero123plus_blending: True
+  use_diff_masks: False
 optim:
-  seed: 100
+  seed: 0
   learn_max_z_normals: True
-  alpha:               -0.01
+  alpha:               -6

@@ -608,8 +608,8 @@ class TexturedMeshModel(nn.Module):
         if use_median: #MJ: check if the texture_img being learned is not so different from the default magenta color
             diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
                 self.device)).abs().sum(axis=1)
-            #MJdefault_mask = (diff < 0.1).float().unsqueeze(0)
-            default_mask = (diff < 0.001).float().unsqueeze(0)
+            #default_mask = (diff < 0.1).float().unsqueeze(0)
+            default_mask = (diff == 0.0).float().unsqueeze(0)
             median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
                 axis=1)  #MJ: get the median color of the non-magenta region of texture_img
             texture_img = texture_img.clone()

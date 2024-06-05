@@ -84,6 +84,7 @@ class GuideConfig:
     strict_projection: bool = True
     
     interleave_mode: bool = False
+    use_diff_masks: bool = True
 
 
 @dataclass
@@ -126,6 +127,8 @@ class LogConfig:
 
     @property
     def exp_dir(self) -> Path:
+        
+        
         return self.exp_root / self.exp_name
 
 

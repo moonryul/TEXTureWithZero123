@@ -1,16 +1,18 @@
 log:
-  exp_name: napoleon_0123plus_use_learned_max_z_normals
+  exp_name: napoleon
 guide:
   text: "A photo of Napoleon Bonaparte, real person"
   append_direction: False
   shape_path: shapes/napoleon.obj
-  use_sd_inpaint: False  
-  use_sd_blending: False   
+  sd_inpaint: False
+  sd_blending: True   
   use_zero123plus: True
   interleave_mode: False
 
-  zero123plus_use_inpaint:  False 
-  zero123plus_use_blending: False
+  zero123plus_inpaint:  False
+  zero123plus_blending: True
+
+  use_diff_masks: False
     # The texture before editing
 optim:
   seed: 0
